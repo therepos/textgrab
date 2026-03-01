@@ -115,44 +115,10 @@ async def convert_pdf(
     log = logging.getLogger(__name__)
 
     content = await pdf.read()
-    raw_text = extract_text_from_pdf(content)
 
-    # --- Strategy 1: DBS-specific parsers (fast, reliable for known formats) ---
+    # --- Strategy 1: Generic table-based extraction (works across banks) ---
     try:
-        if deposit_mod.detect(raw_text):
-            log.info("Strategy 1: DBS deposit format detected")
-            rows = extract_deposit_table(content)
-            txns = deposit_mod.parse_from_table(rows, year)
-            if txns:
-                log.info(f"Strategy 1: parsed {len(txns)} transactions")
-                data = _txns_to_csv(txns, single_amount_col)
-                return StreamingResponse(
-                    io.BytesIO(data),
-                    media_type="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=statement.csv"},
-                )
-    except Exception as e:
-        log.warning(f"Strategy 1 (DBS deposit) failed: {e}")
-
-    try:
-        from .parsers import dispatch
-        txns = dispatch(raw_text, year)
-        if txns:
-            log.info(f"Strategy 1b: text parser matched, {len(txns)} transactions")
-            data = _txns_to_csv(txns, single_amount_col)
-            return StreamingResponse(
-                io.BytesIO(data),
-                media_type="text/csv",
-                headers={"Content-Disposition": "attachment; filename=statement.csv"},
-            )
-    except RuntimeError:
-        log.info("Strategy 1b: no text parser matched")
-    except Exception as e:
-        log.warning(f"Strategy 1b (text parsers) failed: {e}")
-
-    # --- Strategy 2: Generic table-based extraction (works across banks) ---
-    try:
-        log.info("Strategy 2: trying generic table extraction")
+        log.info("Strategy 1: trying generic table extraction")
         doc = extract_structured_from_pdf(content)
         all_txns = []
         for table in doc.all_tables:
@@ -162,7 +128,7 @@ async def convert_pdf(
                 all_txns.extend(txns)
 
         if all_txns:
-            log.info(f"Strategy 2: parsed {len(all_txns)} transactions from tables")
+            log.info(f"Strategy 1: parsed {len(all_txns)} transactions from tables")
             data = _txns_to_csv(all_txns, single_amount_col)
             return StreamingResponse(
                 io.BytesIO(data),
@@ -170,11 +136,49 @@ async def convert_pdf(
                 headers={"Content-Disposition": "attachment; filename=statement.csv"},
             )
         else:
-            log.info("Strategy 2: no financial tables found")
+            log.info("Strategy 1: no financial tables found")
     except Exception as e:
-        log.warning(f"Strategy 2 (generic table) failed: {e}")
+        log.warning(f"Strategy 1 (generic table) failed: {e}")
 
-    # --- Nothing worked: return empty CSV with error hint ---
+    # --- Strategy 2: DBS-specific parsers (fallback) ---
+    try:
+        raw_text = extract_text_from_pdf(content)
+
+        if deposit_mod.detect(raw_text):
+            log.info("Strategy 2: DBS deposit format detected")
+            rows = extract_deposit_table(content)
+            txns = deposit_mod.parse_from_table(rows, year)
+            if txns:
+                log.info(f"Strategy 2: parsed {len(txns)} transactions")
+                data = _txns_to_csv(txns, single_amount_col)
+                return StreamingResponse(
+                    io.BytesIO(data),
+                    media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=statement.csv"},
+                )
+    except Exception as e:
+        log.warning(f"Strategy 2 (DBS deposit) failed: {e}")
+
+    # --- Strategy 3: Text-based regex parsers (last resort) ---
+    try:
+        if not raw_text:
+            raw_text = extract_text_from_pdf(content)
+        from .parsers import dispatch
+        txns = dispatch(raw_text, year)
+        if txns:
+            log.info(f"Strategy 3: text parser matched, {len(txns)} transactions")
+            data = _txns_to_csv(txns, single_amount_col)
+            return StreamingResponse(
+                io.BytesIO(data),
+                media_type="text/csv",
+                headers={"Content-Disposition": "attachment; filename=statement.csv"},
+            )
+    except RuntimeError:
+        log.info("Strategy 3: no text parser matched")
+    except Exception as e:
+        log.warning(f"Strategy 3 (text parsers) failed: {e}")
+
+    # --- Nothing worked ---
     log.warning("All strategies failed, returning empty CSV")
     data = _txns_to_csv([], single_amount_col)
     return StreamingResponse(
