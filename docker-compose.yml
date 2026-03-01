@@ -3,11 +3,12 @@ services:
     image: ghcr.io/therepos/textgrab:latest
     container_name: textgrab
     ports:
-      - "8000:8000"
+      - "3020:8000"
     volumes:
-      - textgrab-data:/data/models
+      - /mnt/sec/apps/textgrab/data:/data/models
     restart: unless-stopped
-    pull_policy: always
-
-volumes:
-  textgrab-data:
+    security_opt:
+      - apparmor=unconfined
+      - seccomp=unconfined
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
