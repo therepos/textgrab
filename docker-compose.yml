@@ -1,11 +1,13 @@
-version: "3.9"
-
 services:
-  text-extractor:
+  textgrab:
     image: ghcr.io/therepos/textgrab:latest
     container_name: textgrab
     ports:
       - "8000:8000"
     volumes:
-      - ./uploads:/app/uploads
+      - textgrab-data:/data/models
     restart: unless-stopped
+    pull_policy: always
+
+volumes:
+  textgrab-data:

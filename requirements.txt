@@ -1,0 +1,11 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+python-multipart
+pdfplumber==0.11.4
+rapidfuzz==3.9.3
+pillow
+pdf2image
+opencv-python-headless
+numpy
+python-doctr[torch]
+torch

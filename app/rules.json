@@ -1,0 +1,14 @@
+{
+  "Food": [
+    "ROYAL CABRI",
+    "STARBUCKS"
+  ],
+  "Transport": [
+    "GRAB",
+    "TAXI"
+  ],
+  "Tech": [
+    "APPLE",
+    "GOOGLE"
+  ]
+}
