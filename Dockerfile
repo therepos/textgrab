@@ -8,10 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     poppler-utils \
     libglib2.0-0 \
-    libgl1-mesa-glx \
-    libsm6 \
-    libxext6 \
-    libxrender1 \
+    libgl1 \
     libjpeg62-turbo-dev \
     libpng-dev \
     && rm -rf /var/lib/apt/lists/*
