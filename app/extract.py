@@ -20,6 +20,7 @@ def _get_doctr_model():
     if _doctr_model is None:
         logger.info("Loading doctr OCR model...")
         from doctr.models import ocr_predictor
+
         _doctr_model = ocr_predictor(
             det_arch="db_resnet50",
             reco_arch="crnn_vgg16_bn",
@@ -32,6 +33,7 @@ def _get_doctr_model():
 def _preprocess_image(img: Image.Image) -> Image.Image:
     import cv2
     import numpy as np
+
     arr = np.array(img)
     if len(arr.shape) == 3:
         gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
@@ -46,6 +48,7 @@ def _preprocess_image(img: Image.Image) -> Image.Image:
 
 def _ocr_with_doctr(images: list[Image.Image]) -> str:
     import numpy as np
+
     model = _get_doctr_model()
     pages = [np.array(img.convert("RGB")) for img in images]
     result = model(pages)
@@ -73,15 +76,21 @@ class ExtractedTable:
     def to_markdown(self) -> str:
         if not self.headers and not self.rows:
             return ""
-        cols = self.headers if self.headers else [f"Col{i+1}" for i in range(len(self.rows[0]))]
+        cols = (
+            self.headers
+            if self.headers
+            else [f"Col{i+1}" for i in range(len(self.rows[0]))]
+        )
+
         def _clean(c):
             return str(c or "").replace("|", "\\|").replace("\n", " ").strip()
+
         lines = []
         lines.append("| " + " | ".join(_clean(c) for c in cols) + " |")
         lines.append("| " + " | ".join("---" for _ in cols) + " |")
         for row in self.rows:
             padded = row + [""] * (len(cols) - len(row))
-            lines.append("| " + " | ".join(_clean(c) for c in padded[:len(cols)]) + " |")
+            lines.append("| " + " | ".join(_clean(c) for c in padded[: len(cols)]) + " |")
         return "\n".join(lines)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -172,7 +181,7 @@ def _tables_from_img2table_pdf(content: bytes) -> Dict[int, List[ExtractedTable]
                     rows.append([str(v).strip() for v in row.tolist()])
                 if rows:
                     bbox = None
-                    if hasattr(table, 'bbox'):
+                    if hasattr(table, "bbox"):
                         bbox = table.bbox
                     tables_by_page[page_num].append(
                         ExtractedTable(headers=headers, rows=rows, page=page_num, bbox=bbox)
@@ -216,6 +225,49 @@ def _tables_from_img2table_image(path: str) -> List[ExtractedTable]:
 # ---------------------------------------------------------------------------
 # Text extraction excluding table regions
 # ---------------------------------------------------------------------------
+def _bbox_to_tuple(b) -> Optional[tuple]:
+    """Normalize bbox-ish objects into (x0, y0, x1, y1) tuple.
+
+    img2table may return a custom BBox object depending on version.
+    """
+    if b is None:
+        return None
+
+    # Already a 4-tuple/list
+    if isinstance(b, (list, tuple)) and len(b) == 4:
+        try:
+            return tuple(float(x) for x in b)
+        except Exception:
+            return None
+
+    # Dict-like
+    if isinstance(b, dict):
+        for keys in (
+            ("x0", "y0", "x1", "y1"),
+            ("x1", "y1", "x2", "y2"),
+            ("left", "top", "right", "bottom"),
+        ):
+            if all(k in b for k in keys):
+                try:
+                    return tuple(float(b[k]) for k in keys)
+                except Exception:
+                    return None
+
+    # Object with common coordinate attrs
+    for attrs in (
+        ("x0", "y0", "x1", "y1"),
+        ("x1", "y1", "x2", "y2"),
+        ("left", "top", "right", "bottom"),
+    ):
+        if all(hasattr(b, a) for a in attrs):
+            try:
+                return tuple(float(getattr(b, a)) for a in attrs)
+            except Exception:
+                return None
+
+    return None
+
+
 def _extract_text_without_tables(page, table_bboxes: List[tuple]) -> str:
     """Extract text from a pdfplumber page excluding table bounding boxes."""
     if not table_bboxes:
@@ -224,7 +276,12 @@ def _extract_text_without_tables(page, table_bboxes: List[tuple]) -> str:
     words = page.extract_words(x_tolerance=2, y_tolerance=3) or []
     filtered = []
     for w in words:
-        wx0, wtop, wx1, wbottom = float(w["x0"]), float(w["top"]), float(w["x1"]), float(w["bottom"])
+        wx0, wtop, wx1, wbottom = (
+            float(w["x0"]),
+            float(w["top"]),
+            float(w["x1"]),
+            float(w["bottom"]),
+        )
         in_table = False
         for bbox in table_bboxes:
             if bbox is None:
@@ -274,7 +331,8 @@ def _structured_from_pdf(content: bytes) -> StructuredDocument:
 
             # Get table bboxes for this page to exclude from text
             page_tables = tables_by_page.get(page_num, [])
-            table_bboxes = [t.bbox for t in page_tables if t.bbox]
+            table_bboxes = [_bbox_to_tuple(t.bbox) for t in page_tables if t.bbox]
+            table_bboxes = [b for b in table_bboxes if b is not None]
 
             sp.text = _extract_text_without_tables(page, table_bboxes)
             sp.tables = page_tables
