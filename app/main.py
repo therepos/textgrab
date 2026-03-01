@@ -171,7 +171,8 @@ def _dbs_extract_deposit_table(content: bytes) -> List[Dict[str, str]]:
                 cols = ["", "", "", "", ""]
                 for w in ws:
                     x = float(w["x0"])
-                    idx = sum(1 for e in edges if x >= e) - 1
+                    # Use 2pt tolerance to handle sub-pixel alignment differences
+                    idx = sum(1 for e in edges if x >= e - 2.0) - 1
                     if 0 <= idx < 5:
                         cols[idx] = (cols[idx] + " " + w["text"]).strip()
 
