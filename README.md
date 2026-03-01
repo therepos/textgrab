@@ -27,3 +27,7 @@ TEXTGRAB [GITHUB]
 ├── README.md
 └── requirements.txt
 ```
+
+## Notes
+
+- Categorise transactions
