@@ -1,21 +1,21 @@
 import io
 import csv
 import os
+import logging
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, Form, Body, HTTPException
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .extract import extract_text, extract_text_from_pdf, extract_structured, extract_structured_from_pdf
-from .parsepdf import extract_deposit_table
-from .parsetext import extract_transactions_from_text
+from .extract import extract_structured, extract_structured_from_pdf, extract_text_from_pdf
 from .categorize import predict_category, load_rules, save_rules
-from .parsers.deposit import _ as deposit_mod
 from .parsers.generic import detect_financial_table, parse_financial_table
+
+log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="textgrab",
-    version="2.0",
+    version="3.0",
     description="PDF/image text extraction + bank statement CSV converter",
     docs_url="/docs",
     redoc_url=None,
@@ -111,14 +111,9 @@ async def convert_pdf(
     single_amount_col: bool = Form(True),
 ):
     """Upload a bank statement PDF and receive a categorized CSV."""
-    import logging
-    log = logging.getLogger(__name__)
-
     content = await pdf.read()
 
-    # --- Strategy 1: Generic table-based extraction (works across banks) ---
     try:
-        log.info("Strategy 1: trying generic table extraction")
         doc = extract_structured_from_pdf(content)
         all_txns = []
         for table in doc.all_tables:
@@ -128,86 +123,23 @@ async def convert_pdf(
                 all_txns.extend(txns)
 
         if all_txns:
-            log.info(f"Strategy 1: parsed {len(all_txns)} transactions from tables")
+            log.info(f"Parsed {len(all_txns)} transactions from {len(doc.all_tables)} tables")
             data = _txns_to_csv(all_txns, single_amount_col)
             return StreamingResponse(
                 io.BytesIO(data),
                 media_type="text/csv",
                 headers={"Content-Disposition": "attachment; filename=statement.csv"},
             )
-        else:
-            log.info("Strategy 1: no financial tables found")
     except Exception as e:
-        log.warning(f"Strategy 1 (generic table) failed: {e}")
+        log.warning(f"Table extraction failed: {e}")
 
-    # --- Strategy 2: DBS-specific parsers (fallback) ---
-    try:
-        raw_text = extract_text_from_pdf(content)
-
-        if deposit_mod.detect(raw_text):
-            log.info("Strategy 2: DBS deposit format detected")
-            rows = extract_deposit_table(content)
-            txns = deposit_mod.parse_from_table(rows, year)
-            if txns:
-                log.info(f"Strategy 2: parsed {len(txns)} transactions")
-                data = _txns_to_csv(txns, single_amount_col)
-                return StreamingResponse(
-                    io.BytesIO(data),
-                    media_type="text/csv",
-                    headers={"Content-Disposition": "attachment; filename=statement.csv"},
-                )
-    except Exception as e:
-        log.warning(f"Strategy 2 (DBS deposit) failed: {e}")
-
-    # --- Strategy 3: Text-based regex parsers (last resort) ---
-    try:
-        if not raw_text:
-            raw_text = extract_text_from_pdf(content)
-        from .parsers import dispatch
-        txns = dispatch(raw_text, year)
-        if txns:
-            log.info(f"Strategy 3: text parser matched, {len(txns)} transactions")
-            data = _txns_to_csv(txns, single_amount_col)
-            return StreamingResponse(
-                io.BytesIO(data),
-                media_type="text/csv",
-                headers={"Content-Disposition": "attachment; filename=statement.csv"},
-            )
-    except RuntimeError:
-        log.info("Strategy 3: no text parser matched")
-    except Exception as e:
-        log.warning(f"Strategy 3 (text parsers) failed: {e}")
-
-    # --- Nothing worked ---
-    log.warning("All strategies failed, returning empty CSV")
+    log.warning("No transactions found, returning empty CSV")
     data = _txns_to_csv([], single_amount_col)
     return StreamingResponse(
         io.BytesIO(data),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=statement.csv"},
     )
-
-
-# -------------------------------------------------------------------
-# DEBUG ENDPOINTS
-# -------------------------------------------------------------------
-@app.post("/api/debug-pdf")
-async def debug_pdf(pdf: UploadFile = File(...), lines: int = Form(80)):
-    """Preview text extracted from a PDF."""
-    content = await pdf.read()
-    raw_text = extract_text_from_pdf(content)
-    sliced = raw_text.splitlines()[:lines]
-    return {"line_count": len(raw_text.splitlines()), "preview": sliced}
-
-
-@app.post("/api/debug-parse")
-async def debug_parse(pdf: UploadFile = File(...), year: int = Form(2025), lines: int = Form(60)):
-    """Preview parsed transactions from PDF text."""
-    content = await pdf.read()
-    raw_text = extract_text_from_pdf(content)
-    txns = extract_transactions_from_text(raw_text, year=year)
-    preview = raw_text.splitlines()[:lines]
-    return {"preview": preview, "txn_count": len(txns), "txns": txns[:20]}
 
 
 # -------------------------------------------------------------------
@@ -240,7 +172,7 @@ def health():
 
 @app.get("/api/version")
 def version():
-    return {"service": "textgrab", "version": "2.1"}
+    return {"service": "textgrab", "version": "3.0"}
 
 
 # -------------------------------------------------------------------
