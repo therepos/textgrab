@@ -11,6 +11,7 @@ from .parsepdf import extract_deposit_table
 from .parsetext import extract_transactions_from_text
 from .categorize import predict_category, load_rules, save_rules
 from .parsers.deposit import _ as deposit_mod
+from .parsers.generic import detect_financial_table, parse_financial_table
 
 app = FastAPI(
     title="textgrab",
@@ -75,44 +76,8 @@ async def extract_structured_endpoint(file: UploadFile = File(...)):
 # -------------------------------------------------------------------
 # BANK STATEMENT → CSV
 # -------------------------------------------------------------------
-@app.post("/api/convert", response_class=StreamingResponse)
-async def convert_pdf(
-    pdf: UploadFile = File(...),
-    year: int = Form(2025),
-    single_amount_col: bool = Form(True),
-):
-    """Upload a bank statement PDF and receive a categorized CSV."""
-    content = await pdf.read()
-    raw_text = extract_text_from_pdf(content)
-
-    # If it's a deposit statement, use column extraction
-    if deposit_mod.detect(raw_text):
-        rows = extract_deposit_table(content)
-        txns = deposit_mod.parse_from_table(rows, year)
-
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(["Date", "Payee", "Category", "Memo", "Amount"])
-        for t in txns:
-            date = t["date"]
-            payee = t["payee"]
-            memo = t.get("memo", "")
-            amount = float(t["amount"])
-            is_credit = bool(t.get("credit", False))
-            cat = predict_category(payee, memo, refund_hint=is_credit)
-            amt = amount if is_credit else -amount
-            w.writerow([date, payee, cat, memo, f"{amt:.2f}"])
-
-        data = buf.getvalue().encode("utf-8")
-        return StreamingResponse(
-            io.BytesIO(data),
-            media_type="text/csv",
-            headers={"Content-Disposition": "attachment; filename=statement.csv"},
-        )
-
-    # Otherwise fallback to text-based parsing
-    txns = extract_transactions_from_text(raw_text, year=year)
-
+def _txns_to_csv(txns, single_amount_col=True) -> bytes:
+    """Convert transaction list to CSV bytes."""
     buf = io.StringIO()
     w = csv.writer(buf)
     if single_amount_col:
@@ -136,7 +101,55 @@ async def convert_pdf(
             inflow = f"{amount:.2f}" if is_credit else ""
             w.writerow([date, payee, cat, memo, outflow, inflow])
 
-    data = buf.getvalue().encode("utf-8")
+    return buf.getvalue().encode("utf-8")
+
+
+@app.post("/api/convert", response_class=StreamingResponse)
+async def convert_pdf(
+    pdf: UploadFile = File(...),
+    year: int = Form(2025),
+    single_amount_col: bool = Form(True),
+):
+    """Upload a bank statement PDF and receive a categorized CSV."""
+    content = await pdf.read()
+
+    # --- Strategy 1: Generic table-based extraction (works across banks) ---
+    try:
+        doc = extract_structured_from_pdf(content)
+        all_txns = []
+        for table in doc.all_tables:
+            col_map = detect_financial_table(table)
+            if col_map:
+                txns = parse_financial_table(table, col_map, year)
+                all_txns.extend(txns)
+
+        if all_txns:
+            data = _txns_to_csv(all_txns, single_amount_col)
+            return StreamingResponse(
+                io.BytesIO(data),
+                media_type="text/csv",
+                headers={"Content-Disposition": "attachment; filename=statement.csv"},
+            )
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Generic table parser failed: {e}")
+
+    # --- Strategy 2: DBS-specific parsers (legacy fallback) ---
+    raw_text = extract_text_from_pdf(content)
+
+    if deposit_mod.detect(raw_text):
+        rows = extract_deposit_table(content)
+        txns = deposit_mod.parse_from_table(rows, year)
+        data = _txns_to_csv(txns, single_amount_col)
+        return StreamingResponse(
+            io.BytesIO(data),
+            media_type="text/csv",
+            headers={"Content-Disposition": "attachment; filename=statement.csv"},
+        )
+
+    # Strategy 3: Text-based regex parsing (last resort)
+    txns = extract_transactions_from_text(raw_text, year=year)
+    data = _txns_to_csv(txns, single_amount_col)
     return StreamingResponse(
         io.BytesIO(data),
         media_type="text/csv",

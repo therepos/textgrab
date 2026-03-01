@@ -9,3 +9,4 @@ opencv-python-headless
 numpy
 python-doctr[torch]
 torch
+img2table
