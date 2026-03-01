@@ -133,18 +133,30 @@ def _dbs_extract_deposit_table(content: bytes) -> List[Dict[str, str]]:
             if not words:
                 continue
 
-            def _find_x(token):
+            # Find the header row by locating WITHDRAWAL($) — unique enough
+            header_y = None
+            for w in words:
+                if w.get("text", "").upper().startswith("WITHDRAWAL"):
+                    header_y = float(w["top"])
+                    break
+            if header_y is None:
+                continue
+
+            # Get all words on the header row (within 3pt tolerance)
+            header_words = [w for w in words if abs(float(w["top"]) - header_y) < 3]
+
+            def _find_x_in_row(token):
                 t = token.upper()
-                for w in words:
+                for w in header_words:
                     if w.get("text", "").upper().startswith(t):
                         return float(w["x0"])
                 return None
 
-            x_date = _find_x("DATE")
-            x_desc = _find_x("DETAILS OF TRANSACTIONS")
-            x_wdr = _find_x("WITHDRAWAL(")
-            x_dep = _find_x("DEPOSIT(")
-            x_bal = _find_x("BALANCE(")
+            x_date = _find_x_in_row("DATE")
+            x_desc = _find_x_in_row("DETAILS")
+            x_wdr = _find_x_in_row("WITHDRAWAL")
+            x_dep = _find_x_in_row("DEPOSIT")
+            x_bal = _find_x_in_row("BALANCE")
             if not all([x_date, x_desc, x_wdr, x_dep, x_bal]):
                 continue
 
