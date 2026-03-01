@@ -324,6 +324,41 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+  .result-text table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 12px 0;
+    font-size: 0.78rem;
+    white-space: nowrap;
+  }
+  .result-text th, .result-text td {
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    text-align: left;
+  }
+  .result-text th {
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .result-text tr:hover td {
+    background: var(--surface-hover);
+  }
+  .result-text hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 16px 0;
+  }
+  .badge {
+    display: inline-block;
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+  }
 
   /* Error */
   .error {
@@ -389,7 +424,7 @@
     <div class="error" id="err-extract"></div>
     <div class="result" id="res-extract">
       <div class="result-header">
-        <h3>✓ Extraction complete</h3>
+        <h3>✓ Extraction complete<span class="badge" id="table-badge" style="display:none"></span></h3>
         <div class="result-actions">
           <button onclick="copyResult()">Copy</button>
           <button onclick="downloadResult()">Download .txt</button>
@@ -434,7 +469,7 @@
   </div>
 </div>
 
-<footer>textgrab v2.0 — all processing runs locally</footer>
+<footer>textgrab v2.1 — all processing runs locally</footer>
 
 <script>
   const state = { extract: { file: null }, convert: { file: null, csv: null } };
@@ -479,6 +514,37 @@
     });
   });
 
+  // Markdown table to HTML
+  function mdToHtml(md) {
+    // Split into sections by ---
+    const sections = md.split(/\n\n---\n\n/);
+    return sections.map(section => {
+      const parts = section.split(/\n\n/);
+      return parts.map(part => {
+        const lines = part.trim().split('\n');
+        // Detect markdown table: first line starts with |
+        if (lines.length >= 3 && lines[0].startsWith('|') && lines[1].match(/^\|\s*---/)) {
+          const headers = lines[0].split('|').filter(c => c.trim()).map(c => c.trim());
+          const rows = lines.slice(2).map(line =>
+            line.split('|').filter(c => c.trim()).map(c => c.trim())
+          );
+          let html = '<table><thead><tr>' + headers.map(h => `<th>${esc(h)}</th>`).join('') + '</tr></thead><tbody>';
+          for (const row of rows) {
+            html += '<tr>' + row.map(c => `<td>${esc(c)}</td>`).join('') + '</tr>';
+          }
+          html += '</tbody></table>';
+          return html;
+        }
+        // Plain text block
+        return '<pre>' + esc(part) + '</pre>';
+      }).join('');
+    }).join('<hr>');
+  }
+
+  function esc(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
   // Extract text
   async function doExtract() {
     const file = state.extract.file;
@@ -496,9 +562,18 @@
         throw new Error(err.detail || 'Extraction failed');
       }
       const data = await res.json();
-      document.getElementById('rt-extract').textContent = data.text;
+      document.getElementById('rt-extract').innerHTML = mdToHtml(data.text);
       state.extract.resultText = data.text;
+      state.extract.plainText = data.plain_text;
       state.extract.resultName = data.filename;
+      // Show table badge
+      const badge = document.getElementById('table-badge');
+      if (data.table_count > 0) {
+        badge.textContent = data.table_count + ' table' + (data.table_count > 1 ? 's' : '') + ' found';
+        badge.style.display = 'inline-block';
+      } else {
+        badge.style.display = 'none';
+      }
       show('res-extract');
     } catch (e) {
       showError('err-extract', e.message);

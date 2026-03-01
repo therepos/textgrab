@@ -6,7 +6,7 @@ from fastapi import FastAPI, UploadFile, File, Form, Body, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .extract import extract_text, extract_text_from_pdf
+from .extract import extract_text, extract_text_from_pdf, extract_structured, extract_structured_from_pdf
 from .parsepdf import extract_deposit_table
 from .parsetext import extract_transactions_from_text
 from .categorize import predict_category, load_rules, save_rules
@@ -30,20 +30,46 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # -------------------------------------------------------------------
 @app.post("/api/extract")
 async def extract(file: UploadFile = File(...)):
-    """Extract text from a PDF or image."""
+    """Extract text from a PDF or image. Returns markdown with tables formatted."""
     input_path = os.path.join(UPLOAD_DIR, file.filename)
     with open(input_path, "wb") as f:
         f.write(await file.read())
 
     try:
-        text = extract_text(input_path)
+        doc = extract_structured(input_path)
+        markdown = doc.to_markdown()
+        plain = doc.to_plain_text()
+        table_count = len(doc.all_tables)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
     finally:
         if os.path.exists(input_path):
             os.remove(input_path)
 
-    return {"text": text, "filename": file.filename}
+    return {
+        "text": markdown,
+        "plain_text": plain,
+        "table_count": table_count,
+        "filename": file.filename,
+    }
+
+
+@app.post("/api/extract-structured")
+async def extract_structured_endpoint(file: UploadFile = File(...)):
+    """Extract structured content (text + tables as JSON) from a PDF or image."""
+    input_path = os.path.join(UPLOAD_DIR, file.filename)
+    with open(input_path, "wb") as f:
+        f.write(await file.read())
+
+    try:
+        doc = extract_structured(input_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Extraction failed: {str(e)}")
+    finally:
+        if os.path.exists(input_path):
+            os.remove(input_path)
+
+    return doc.to_dict()
 
 
 # -------------------------------------------------------------------
@@ -170,7 +196,7 @@ def health():
 
 @app.get("/api/version")
 def version():
-    return {"service": "textgrab", "version": "2.0"}
+    return {"service": "textgrab", "version": "2.1"}
 
 
 # -------------------------------------------------------------------
