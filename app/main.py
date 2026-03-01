@@ -10,6 +10,9 @@ from fastapi.staticfiles import StaticFiles
 from .extract import extract_structured, extract_structured_from_pdf, extract_text_from_pdf
 from .categorize import predict_category, load_rules, save_rules
 from .parsers.generic import detect_financial_table, parse_financial_table
+from .parsepdf import extract_deposit_table
+from .parsers.deposit import _ as deposit_mod
+from .parsers import dispatch
 
 log = logging.getLogger(__name__)
 
@@ -113,6 +116,7 @@ async def convert_pdf(
     """Upload a bank statement PDF and receive a categorized CSV."""
     content = await pdf.read()
 
+    # --- Strategy 1: Generic table-based extraction (works across banks) ---
     try:
         doc = extract_structured_from_pdf(content)
         all_txns = []
@@ -123,7 +127,7 @@ async def convert_pdf(
                 all_txns.extend(txns)
 
         if all_txns:
-            log.info(f"Parsed {len(all_txns)} transactions from {len(doc.all_tables)} tables")
+            log.info(f"Generic parser: {len(all_txns)} transactions from {len(doc.all_tables)} tables")
             data = _txns_to_csv(all_txns, single_amount_col)
             return StreamingResponse(
                 io.BytesIO(data),
@@ -131,9 +135,46 @@ async def convert_pdf(
                 headers={"Content-Disposition": "attachment; filename=statement.csv"},
             )
     except Exception as e:
-        log.warning(f"Table extraction failed: {e}")
+        log.warning(f"Generic table parser failed: {e}")
 
-    log.warning("No transactions found, returning empty CSV")
+    # --- Strategy 2: DBS-specific parsers (fallback) ---
+    try:
+        raw_text = extract_text_from_pdf(content)
+
+        if deposit_mod.detect(raw_text):
+            log.info("Fallback: DBS deposit format detected")
+            rows = extract_deposit_table(content)
+            txns = deposit_mod.parse_from_table(rows, year)
+            if txns:
+                data = _txns_to_csv(txns, single_amount_col)
+                return StreamingResponse(
+                    io.BytesIO(data),
+                    media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=statement.csv"},
+                )
+    except Exception as e:
+        log.warning(f"DBS deposit parser failed: {e}")
+
+    # --- Strategy 3: Text-based regex parsers (last resort) ---
+    try:
+        if not raw_text:
+            raw_text = extract_text_from_pdf(content)
+        txns = dispatch(raw_text, year)
+        if txns:
+            log.info(f"Fallback: text parser matched, {len(txns)} transactions")
+            data = _txns_to_csv(txns, single_amount_col)
+            return StreamingResponse(
+                io.BytesIO(data),
+                media_type="text/csv",
+                headers={"Content-Disposition": "attachment; filename=statement.csv"},
+            )
+    except RuntimeError:
+        pass
+    except Exception as e:
+        log.warning(f"Text parser failed: {e}")
+
+    # --- Nothing worked ---
+    log.warning("No transactions found in any strategy")
     data = _txns_to_csv([], single_amount_col)
     return StreamingResponse(
         io.BytesIO(data),
