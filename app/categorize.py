@@ -5,18 +5,18 @@ Two-layer approach:
   1. derive_payee(description) -> clean short vendor name
      - Handles DBS-specific prefixes, location stripping, alias merging
   2. predict_category(payee) -> category string
-     - Looks up the payee in a learned dictionary (payee_lookup.json)
+     - Looks up the payee in a learned dictionary (lookup.json)
      - Falls back to fuzzy matching against known payees
      - Returns "Other" if nothing matches
 
-The lookup is bootstrapped from a labelled training CSV and can be
-extended at runtime via the /api/rules endpoints.
+The lookup is bootstrapped from app/lookup.json and persisted to
+/data/models/lookup.json at runtime. Editable via /api/lookup endpoints.
 """
 
 import json
 import re
 import shutil
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Tuple
 from pathlib import Path
 
 from rapidfuzz import fuzz
@@ -25,12 +25,8 @@ from rapidfuzz import fuzz
 # Paths
 # ---------------------------------------------------------------------------
 MODEL_DIR = Path("/data/models")
-LOOKUP_PATH = MODEL_DIR / "payee_lookup.json"
-DEFAULT_LOOKUP_PATH = Path(__file__).parent / "payee_lookup.json"
-
-# Legacy rules.json kept for backward compat with /api/rules endpoints
-RULES_PATH = MODEL_DIR / "rules.json"
-DEFAULT_RULES_PATH = Path(__file__).parent / "rules.json"
+LOOKUP_PATH = MODEL_DIR / "lookup.json"
+DEFAULT_LOOKUP_PATH = Path(__file__).parent / "lookup.json"
 
 # ---------------------------------------------------------------------------
 # Location / noise patterns to strip from bank descriptions
@@ -91,7 +87,6 @@ def _derive_payee_raw(desc: str) -> str:
                 return "DBS Payment Plan"
             return name
 
-    # --- Well-known prefix patterns ---
     if d.startswith("BUS/MRT"):
         return "TransitLink"
     if d.startswith("GRAB"):
@@ -167,7 +162,7 @@ def _derive_payee_raw(desc: str) -> str:
     if d.startswith("AGODA"):
         return "Agoda"
 
-    # --- Generic fallback: take the part before branch/location separators ---
+    # Generic fallback: take the part before branch/location separators
     name = d.split(" - ")[0]
     name = re.sub(r"\s*@\s*.*$", "", name)
     name = re.sub(r"\s*_\S+$", "", name)
@@ -205,13 +200,6 @@ def _load_lookup() -> Tuple[Dict[str, str], Dict[str, str]]:
         _cache["lookup"] = ({}, {})
 
     return _cache["lookup"]
-
-
-def _save_lookup(payee_cats: Dict[str, str], aliases: Dict[str, str]) -> None:
-    MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    data = {"payee_categories": payee_cats, "payee_aliases": aliases}
-    LOOKUP_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    _cache["lookup"] = (payee_cats, aliases)
 
 
 def reload_lookup() -> None:
@@ -270,24 +258,18 @@ def predict_category(
 
 
 # ---------------------------------------------------------------------------
-# Legacy /api/rules compatibility
+# Lookup management (for /api/lookup endpoints)
 # ---------------------------------------------------------------------------
-def load_rules() -> Dict[str, List[str]]:
-    """Load legacy rules.json (kept for backward compat)."""
-    if not RULES_PATH.exists() and DEFAULT_RULES_PATH.exists():
-        MODEL_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(DEFAULT_RULES_PATH, RULES_PATH)
-    if not RULES_PATH.exists():
-        return {}
-    try:
-        raw = json.loads(RULES_PATH.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            return raw
-        return {}
-    except Exception:
-        return {}
+def load_lookup() -> Dict:
+    """Return the full lookup dict for the API."""
+    payee_cats, aliases = _load_lookup()
+    return {"payee_categories": payee_cats, "payee_aliases": aliases}
 
 
-def save_rules(rules: Dict[str, List[str]]) -> None:
+def save_lookup(data: Dict) -> None:
+    """Save updated lookup from the API."""
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
-    RULES_PATH.write_text(json.dumps(rules, indent=2), encoding="utf-8")
+    LOOKUP_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    _cache.pop("lookup", None)  # bust cache

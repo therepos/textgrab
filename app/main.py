@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .extract import extract_structured, extract_structured_from_pdf, extract_text_from_pdf
-from .categorize import predict_category, derive_payee, load_rules, save_rules
+from .categorize import predict_category, derive_payee, load_lookup, save_lookup
 from .parsers import get_templates, get_parser, auto_detect
 from .parsers.generic import detect_financial_table, parse_financial_table
 from .parsers.helpers import extract_year_from_pdf
@@ -338,22 +338,29 @@ def list_templates():
 
 
 # ===================================================================
-# RULES MANAGEMENT
+# LOOKUP MANAGEMENT
 # ===================================================================
-@app.get("/api/rules")
-def get_rules():
-    return load_rules()
+@app.get("/api/lookup")
+def get_lookup():
+    """Return the payee → category lookup and alias table."""
+    return load_lookup()
 
 
-@app.post("/api/rules")
-def upsert_rules(
-    rules: dict = Body(
+@app.post("/api/lookup")
+def upsert_lookup(
+    data: dict = Body(
         ...,
-        example={"Food": ["ROYAL CABRI", "STARBUCKS"], "Transport": ["GRAB"]},
+        example={
+            "payee_categories": {"Starbucks": "Food", "Grab": "Transport"},
+            "payee_aliases": {"starbucks": "Starbucks"},
+        },
     ),
 ):
-    save_rules(rules or {})
-    return {"count": sum(len(v) for v in (rules or {}).values())}
+    """Replace the full lookup table."""
+    save_lookup(data or {})
+    cats = (data or {}).get("payee_categories", {})
+    aliases = (data or {}).get("payee_aliases", {})
+    return {"payees": len(cats), "aliases": len(aliases)}
 
 
 # ===================================================================
@@ -361,11 +368,11 @@ def upsert_rules(
 # ===================================================================
 @app.get("/api/health")
 def health():
-    rules_path = Path("/data/models/rules.json")
+    lookup_path = Path("/data/models/lookup.json")
     return {
         "ok": True,
-        "rules_exists": rules_path.exists(),
-        "rules_path": str(rules_path),
+        "lookup_exists": lookup_path.exists(),
+        "lookup_path": str(lookup_path),
     }
 
 
