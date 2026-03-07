@@ -437,10 +437,10 @@
   <!-- BANK STATEMENT PANEL -->
   <div id="panel-convert" class="panel">
     <div class="dropzone" id="dz-convert">
-      <input type="file" accept=".pdf" onchange="fileSelected('convert', this)">
+      <input type="file" accept=".pdf" multiple onchange="fileSelected('convert', this)">
       <div class="dropzone-icon">🏦</div>
-      <div class="dropzone-text">Drop a bank statement PDF or <strong>browse</strong></div>
-      <div class="dropzone-hint">DBS credit card &amp; deposit statements supported</div>
+      <div class="dropzone-text">Drop bank statement PDF(s) or <strong>browse</strong></div>
+      <div class="dropzone-hint">Upload one or many PDFs • merged into one CSV</div>
     </div>
     <div class="file-info" id="fi-convert">
       <span class="name" id="fn-convert"></span>
@@ -456,7 +456,7 @@
     <button class="submit-btn" id="btn-convert" disabled onclick="doConvert()">Convert to CSV</button>
     <div class="progress" id="prog-convert">
       <div class="progress-bar"><div class="progress-bar-fill"></div></div>
-      <div class="progress-text">Processing statement…</div>
+      <div class="progress-text">Processing statement(s)…</div>
     </div>
     <div class="error" id="err-convert"></div>
     <div class="result" id="res-convert">
@@ -479,7 +479,7 @@
 </footer>
 
 <script>
-  const state = { extract: { file: null }, convert: { file: null, csv: null } };
+  const state = { extract: { file: null }, convert: { files: [], csv: null, downloadName: 'statements_merged.csv' } };
 
   // Tab switching
   function switchTab(tab) {
@@ -490,18 +490,37 @@
 
   // File selection
   function fileSelected(mode, input) {
-    const file = input.files[0];
-    if (!file) return;
-    state[mode].file = file;
-    document.getElementById('fn-' + mode).textContent = file.name;
-    document.getElementById('fs-' + mode).textContent = formatSize(file.size);
+    const files = Array.from(input.files || []);
+    if (!files.length) return;
+
+    if (mode === 'convert') {
+      state.convert.files = files;
+      const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+      document.getElementById('fn-convert').textContent = files.length === 1
+        ? files[0].name
+        : `${files.length} files selected`;
+      document.getElementById('fs-convert').textContent = files.length === 1
+        ? formatSize(files[0].size)
+        : formatSize(totalSize);
+    } else {
+      const file = files[0];
+      state.extract.file = file;
+      document.getElementById('fn-extract').textContent = file.name;
+      document.getElementById('fs-extract').textContent = formatSize(file.size);
+    }
+
     document.getElementById('fi-' + mode).classList.add('visible');
     document.getElementById('btn-' + mode).disabled = false;
     hide('err-' + mode); hide('res-' + mode);
   }
 
   function clearFile(mode) {
-    state[mode].file = null;
+    if (mode === 'convert') {
+      state.convert.files = [];
+      state.convert.csv = null;
+    } else {
+      state.extract.file = null;
+    }
     document.getElementById('fi-' + mode).classList.remove('visible');
     document.getElementById('btn-' + mode).disabled = true;
     document.getElementById('dz-' + mode).querySelector('input').value = '';
@@ -592,18 +611,28 @@
 
   // Convert bank statement
   async function doConvert() {
-    const file = state.convert.file;
-    if (!file) return;
+    const files = state.convert.files || [];
+    if (!files.length) return;
     const btn = document.getElementById('btn-convert');
     btn.disabled = true;
     show('prog-convert'); hide('err-convert'); hide('res-convert');
 
     try {
       const form = new FormData();
-      form.append('pdf', file);
+      if (files.length > 1) {
+        for (const file of files) form.append('pdfs', file);
+      } else {
+        form.append('pdf', files[0]);
+      }
       form.append('template', document.getElementById('template').value);
       form.append('single_amount_col', 'true');
-      const res = await fetch('/api/convert', { method: 'POST', body: form });
+      if (files.length > 1) {
+        form.append('merge', 'true');
+        form.append('dedupe', 'true');
+        form.append('include_source_file', 'true');
+      }
+      const endpoint = files.length > 1 ? '/api/convert-bulk' : '/api/convert';
+      const res = await fetch(endpoint, { method: 'POST', body: form });
       if (!res.ok) {
         const text = await res.text();
         let msg = 'Conversion failed';
@@ -612,6 +641,7 @@
       }
       const csvText = await res.text();
       state.convert.csv = csvText;
+      state.convert.downloadName = files.length > 1 ? 'statements_merged.csv' : 'statement.csv';
       document.getElementById('rt-convert').textContent = csvText;
       show('res-convert');
     } catch (e) {
@@ -632,7 +662,7 @@
     downloadBlob(text, name, 'text/plain');
   }
   function downloadCsv() {
-    downloadBlob(state.convert.csv || '', 'statement.csv', 'text/csv');
+    downloadBlob(state.convert.csv || '', state.convert.downloadName || 'statements_merged.csv', 'text/csv');
   }
   function downloadBlob(content, filename, type) {
     const a = document.createElement('a');

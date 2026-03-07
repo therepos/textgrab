@@ -78,95 +78,16 @@ async def extract_structured_endpoint(file: UploadFile = File(...)):
 
 
 # ===================================================================
-# CONVERSION HELPERS
+# CSV HELPER
 # ===================================================================
-def _parse_transactions_from_pdf(content: bytes, template: str = "auto") -> List[Dict[str, Any]]:
-    """Parse one statement PDF into standardised transaction dicts."""
-    txns: List[Dict[str, Any]] = []
-
-    if template != "auto":
-        parser = get_parser(template)
-        if parser is None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown template: {template}. "
-                       f"Available: {list(get_templates().keys())}",
-            )
-        return parser.parse(content)
-
-    try:
-        doc = extract_structured_from_pdf(content)
-        for table in doc.all_tables:
-            col_map = detect_financial_table(table)
-            if col_map:
-                year = extract_year_from_pdf(content) or 2025
-                txns.extend(parse_financial_table(table, col_map, year))
-    except Exception as e:
-        log.warning(f"Generic table parser failed: {e}")
-
-    if not txns:
-        try:
-            raw_text = extract_text_from_pdf(content)
-            slug = auto_detect(raw_text)
-            if slug:
-                parser = get_parser(slug)
-                log.info(f"Auto-detected: {slug} ({parser.LABEL})")
-                txns = parser.parse(content)
-        except Exception as e:
-            log.warning(f"Auto-detect failed: {e}")
-
-    return txns
-
-
-def _dedupe_transactions(txns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Drop exact duplicate transactions that can happen across overlapping statements."""
-    seen = set()
-    out: List[Dict[str, Any]] = []
-    for t in txns:
-        key = (
-            t.get("date", ""),
-            t.get("payee", ""),
-            t.get("memo", ""),
-            round(float(t.get("amount", 0.0)), 2),
-            bool(t.get("credit", False)),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(t)
-    return out
-
-
-def _sort_transactions(txns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return sorted(
-        txns,
-        key=lambda t: (
-            t.get("date", ""),
-            t.get("payee", ""),
-            t.get("memo", ""),
-            float(t.get("amount", 0.0)),
-            bool(t.get("credit", False)),
-        ),
-    )
-
-
-def _txns_to_csv(
-    txns: List[Dict[str, Any]],
-    single_amount_col: bool = True,
-    include_source_file: bool = False,
-) -> bytes:
+def _txns_to_csv(txns: List[Dict[str, Any]], single_amount_col: bool = True) -> bytes:
     """Convert transaction list to CSV bytes."""
     buf = io.StringIO()
     w = csv.writer(buf)
-
-    headers = ["Date", "Payee", "Category", "Memo"]
-    if include_source_file:
-        headers.append("SourceFile")
     if single_amount_col:
-        headers.append("Amount")
+        w.writerow(["Date", "Payee", "Category", "Memo", "Amount"])
     else:
-        headers.extend(["Outflow", "Inflow"])
-    w.writerow(headers)
+        w.writerow(["Date", "Payee", "Category", "Memo", "Outflow", "Inflow"])
 
     for t in txns:
         date = t["date"]
@@ -176,25 +97,19 @@ def _txns_to_csv(
         is_credit = bool(t.get("credit", False))
         cat = predict_category(payee, memo, refund_hint=is_credit)
 
-        row = [date, payee, cat, memo]
-        if include_source_file:
-            row.append(t.get("source_file", ""))
-
         if single_amount_col:
             amt = amount if is_credit else -amount
-            row.append(f"{amt:.2f}")
+            w.writerow([date, payee, cat, memo, f"{amt:.2f}"])
         else:
             outflow = "" if is_credit else f"{amount:.2f}"
             inflow = f"{amount:.2f}" if is_credit else ""
-            row.extend([outflow, inflow])
-
-        w.writerow(row)
+            w.writerow([date, payee, cat, memo, outflow, inflow])
 
     return buf.getvalue().encode("utf-8")
 
 
 # ===================================================================
-# CONVERT ENDPOINTS
+# CONVERT ENDPOINT
 # ===================================================================
 @app.post("/api/convert", response_class=StreamingResponse)
 async def convert_pdf(
@@ -202,9 +117,49 @@ async def convert_pdf(
     template: str = Form("auto"),
     single_amount_col: bool = Form(True),
 ):
-    """Upload a bank statement PDF and receive a categorized CSV."""
+    """Upload a bank statement PDF and receive a categorized CSV.
+
+    Use /api/templates to list available templates.
+    """
     content = await pdf.read()
-    txns = _parse_transactions_from_pdf(content, template)
+    txns: List[Dict[str, Any]] = []
+
+    if template != "auto":
+        # --- Named template: dispatch directly ---
+        parser = get_parser(template)
+        if parser is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown template: {template}. "
+                       f"Available: {list(get_templates().keys())}",
+            )
+        txns = parser.parse(content)
+
+    else:
+        # --- Auto mode ---
+        # Strategy 1: Generic table parser (img2table)
+        try:
+            doc = extract_structured_from_pdf(content)
+            for table in doc.all_tables:
+                col_map = detect_financial_table(table)
+                if col_map:
+                    year = extract_year_from_pdf(content) or 2025
+                    parsed = parse_financial_table(table, col_map, year)
+                    txns.extend(parsed)
+        except Exception as e:
+            log.warning(f"Generic table parser failed: {e}")
+
+        # Strategy 2: Auto-detect registered parsers
+        if not txns:
+            try:
+                raw_text = extract_text_from_pdf(content)
+                slug = auto_detect(raw_text)
+                if slug:
+                    parser = get_parser(slug)
+                    log.info(f"Auto-detected: {slug} ({parser.LABEL})")
+                    txns = parser.parse(content)
+            except Exception as e:
+                log.warning(f"Auto-detect failed: {e}")
 
     if txns:
         log.info(f"Parsed {len(txns)} transactions (template={template})")
@@ -214,53 +169,6 @@ async def convert_pdf(
         io.BytesIO(data),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=statement.csv"},
-    )
-
-
-@app.post("/api/convert-bulk", response_class=StreamingResponse)
-async def convert_pdf_bulk(
-    pdfs: List[UploadFile] = File(...),
-    template: str = Form("auto"),
-    single_amount_col: bool = Form(True),
-    merge: bool = Form(True),
-    dedupe: bool = Form(True),
-    include_source_file: bool = Form(True),
-):
-    """Upload multiple bank statement PDFs and receive one merged categorized CSV."""
-    if not pdfs:
-        raise HTTPException(status_code=400, detail="No PDF files uploaded")
-
-    if not merge:
-        raise HTTPException(status_code=400, detail="Only merged output is currently supported")
-
-    all_txns: List[Dict[str, Any]] = []
-    file_stats = []
-
-    for pdf in pdfs:
-        content = await pdf.read()
-        txns = _parse_transactions_from_pdf(content, template)
-        for t in txns:
-            t["source_file"] = pdf.filename or "statement.pdf"
-        all_txns.extend(txns)
-        file_stats.append((pdf.filename or "statement.pdf", len(txns)))
-
-    if dedupe:
-        all_txns = _dedupe_transactions(all_txns)
-    all_txns = _sort_transactions(all_txns)
-
-    for name, count in file_stats:
-        log.info(f"Parsed {count} transactions from {name} (template={template})")
-    log.info(f"Bulk parsed {len(all_txns)} merged transactions from {len(file_stats)} files")
-
-    data = _txns_to_csv(
-        all_txns,
-        single_amount_col=single_amount_col,
-        include_source_file=include_source_file,
-    )
-    return StreamingResponse(
-        io.BytesIO(data),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=statements_merged.csv"},
     )
 
 
