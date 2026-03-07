@@ -78,8 +78,11 @@ async def extract_structured_endpoint(file: UploadFile = File(...)):
 
 
 @app.post("/api/extract-bulk")
-async def extract_bulk(files: List[UploadFile] = File(...)):
-    """Extract text from multiple PDFs/images and return one merged result."""
+async def extract_bulk(
+    files: List[UploadFile] = File(...),
+    merge: bool = Form(True),
+):
+    """Extract text from multiple PDFs/images. Merge into one or return separately."""
     if not files:
         raise HTTPException(status_code=400, detail="No files uploaded")
 
@@ -115,6 +118,14 @@ async def extract_bulk(files: List[UploadFile] = File(...)):
             if os.path.exists(input_path):
                 os.remove(input_path)
 
+    if not merge:
+        return {
+            "merged": False,
+            "table_count": total_tables,
+            "file_count": len(files),
+            "files": results,
+        }
+
     # Build merged output
     merged_md_parts = []
     merged_plain_parts = []
@@ -131,6 +142,7 @@ async def extract_bulk(files: List[UploadFile] = File(...)):
     merged_plain = "\n\n---\n\n".join(merged_plain_parts)
 
     return {
+        "merged": True,
         "text": merged_md,
         "plain_text": merged_plain,
         "table_count": total_tables,

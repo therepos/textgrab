@@ -387,6 +387,49 @@
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* Separate file results */
+  .file-result {
+    margin-top: 16px;
+  }
+  .file-result-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .file-result-header h4 {
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+  }
+  .file-result-header .file-result-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .file-result-header .file-result-actions button {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-family: inherit;
+    font-size: 0.7rem;
+    padding: 3px 10px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .file-result-header .file-result-actions button:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .file-result-error {
+    font-size: 0.8rem;
+    color: var(--red);
+    padding: 8px 12px;
+    background: rgba(248,113,113,0.08);
+    border-radius: 6px;
+  }
 </style>
 </head>
 <body>
@@ -409,12 +452,19 @@
       <input type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp,.webp" multiple onchange="fileSelected('extract', this)">
       <div class="dropzone-icon">📄</div>
       <div class="dropzone-text">Drop file(s) or <strong>browse</strong></div>
-      <div class="dropzone-hint">PDF, JPG, PNG, TIFF, BMP, WebP • multiple files merged into one output</div>
+      <div class="dropzone-hint">PDF, JPG, PNG, TIFF, BMP, WebP • supports multiple files</div>
     </div>
     <div class="file-info" id="fi-extract">
       <span class="name" id="fn-extract"></span>
       <span class="size" id="fs-extract"></span>
       <button class="remove" onclick="clearFile('extract')">✕</button>
+    </div>
+    <div class="options" id="extract-options" style="display:none">
+      <label for="extract-merge">Output</label>
+      <select id="extract-merge">
+        <option value="merged">Merged (one file)</option>
+        <option value="separate">Separate (per file)</option>
+      </select>
     </div>
     <button class="submit-btn" id="btn-extract" disabled onclick="doExtract()">Extract Text</button>
     <div class="progress" id="prog-extract">
@@ -425,13 +475,14 @@
     <div class="result" id="res-extract">
       <div class="result-header">
         <h3>✓ Extraction complete<span class="badge" id="table-badge" style="display:none"></span></h3>
-        <div class="result-actions">
+        <div class="result-actions" id="extract-actions-merged">
           <button onclick="copyResult()">Copy</button>
           <button onclick="downloadResult()">Download .txt</button>
         </div>
       </div>
       <div class="result-text" id="rt-extract"></div>
     </div>
+    <div class="result" id="res-extract-separate"></div>
   </div>
 
   <!-- BANK STATEMENT PANEL -->
@@ -515,7 +566,11 @@
 
     document.getElementById('fi-' + mode).classList.add('visible');
     document.getElementById('btn-' + mode).disabled = false;
+    if (mode === 'extract') {
+      document.getElementById('extract-options').style.display = files.length > 1 ? 'flex' : 'none';
+    }
     hide('err-' + mode); hide('res-' + mode);
+    if (mode === 'extract') hide('res-extract-separate');
   }
 
   function clearFile(mode) {
@@ -524,6 +579,8 @@
       state.convert.csv = null;
     } else {
       state.extract.files = [];
+      document.getElementById('extract-options').style.display = 'none';
+      hide('res-extract-separate');
     }
     document.getElementById('fi-' + mode).classList.remove('visible');
     document.getElementById('btn-' + mode).disabled = true;
@@ -581,7 +638,9 @@
     if (!files.length) return;
     const btn = document.getElementById('btn-extract');
     btn.disabled = true;
-    show('prog-extract'); hide('err-extract'); hide('res-extract');
+    show('prog-extract'); hide('err-extract'); hide('res-extract'); hide('res-extract-separate');
+
+    const wantMerge = files.length === 1 || document.getElementById('extract-merge').value === 'merged';
 
     try {
       const form = new FormData();
@@ -589,6 +648,7 @@
 
       if (files.length > 1) {
         for (const file of files) form.append('files', file);
+        form.append('merge', wantMerge ? 'true' : 'false');
         endpoint = '/api/extract-bulk';
       } else {
         form.append('file', files[0]);
@@ -601,29 +661,71 @@
         throw new Error(err.detail || 'Extraction failed');
       }
       const data = await res.json();
-      document.getElementById('rt-extract').innerHTML = mdToHtml(data.text);
-      state.extract.resultText = data.text;
-      state.extract.plainText = data.plain_text;
-      state.extract.resultName = files.length > 1 ? 'merged_extraction' : (data.filename || 'extracted');
-      // Show table badge
+
+      // Table badge
       const badge = document.getElementById('table-badge');
       if (data.table_count > 0) {
         let badgeText = data.table_count + ' table' + (data.table_count > 1 ? 's' : '') + ' found';
-        if (data.file_count && data.file_count > 1) {
-          badgeText += ` across ${data.file_count} files`;
-        }
+        if (data.file_count && data.file_count > 1) badgeText += ` across ${data.file_count} files`;
         badge.textContent = badgeText;
         badge.style.display = 'inline-block';
       } else {
         badge.style.display = 'none';
       }
-      show('res-extract');
+
+      if (data.merged === false) {
+        // Separate mode: render individual file cards
+        state.extract.separateFiles = data.files;
+        const container = document.getElementById('res-extract-separate');
+        let html = '<div class="result-header"><h3>✓ Extraction complete' +
+          (badge.style.display !== 'none' ? ' <span class="badge">' + badge.textContent + '</span>' : '') +
+          '</h3></div>';
+        data.files.forEach((f, i) => {
+          html += '<div class="file-result">';
+          html += '<div class="file-result-header">';
+          html += '<h4>📄 ' + esc(f.filename) + '</h4>';
+          if (!f.error) {
+            html += '<div class="file-result-actions">';
+            html += '<button onclick="copySeparate(' + i + ')">Copy</button>';
+            html += '<button onclick="downloadSeparate(' + i + ')">Download .txt</button>';
+            html += '</div>';
+          }
+          html += '</div>';
+          if (f.error) {
+            html += '<div class="file-result-error">⚠️ ' + esc(f.error) + '</div>';
+          } else {
+            html += '<div class="result-text">' + mdToHtml(f.text) + '</div>';
+          }
+          html += '</div>';
+        });
+        container.innerHTML = html;
+        badge.style.display = 'none'; // badge shown inline above
+        show('res-extract-separate');
+      } else {
+        // Merged mode (or single file)
+        document.getElementById('rt-extract').innerHTML = mdToHtml(data.text);
+        state.extract.resultText = data.text;
+        state.extract.plainText = data.plain_text;
+        state.extract.resultName = files.length > 1 ? 'merged_extraction' : (data.filename || 'extracted');
+        show('res-extract');
+      }
     } catch (e) {
       showError('err-extract', e.message);
     } finally {
       hide('prog-extract');
       btn.disabled = false;
     }
+  }
+
+  function copySeparate(index) {
+    const f = (state.extract.separateFiles || [])[index];
+    if (f) navigator.clipboard.writeText(f.text || '');
+  }
+  function downloadSeparate(index) {
+    const f = (state.extract.separateFiles || [])[index];
+    if (!f) return;
+    const name = (f.filename || 'extracted').replace(/\.[^.]+$/, '') + '.txt';
+    downloadBlob(f.plain_text || f.text || '', name, 'text/plain');
   }
 
   // Convert bank statement
