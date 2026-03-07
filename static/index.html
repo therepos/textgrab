@@ -406,10 +406,10 @@
   <!-- EXTRACT TEXT PANEL -->
   <div id="panel-extract" class="panel active">
     <div class="dropzone" id="dz-extract">
-      <input type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp,.webp" onchange="fileSelected('extract', this)">
+      <input type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp,.webp" multiple onchange="fileSelected('extract', this)">
       <div class="dropzone-icon">📄</div>
-      <div class="dropzone-text">Drop a file or <strong>browse</strong></div>
-      <div class="dropzone-hint">PDF, JPG, PNG, TIFF, BMP, WebP</div>
+      <div class="dropzone-text">Drop file(s) or <strong>browse</strong></div>
+      <div class="dropzone-hint">PDF, JPG, PNG, TIFF, BMP, WebP • multiple files merged into one output</div>
     </div>
     <div class="file-info" id="fi-extract">
       <span class="name" id="fn-extract"></span>
@@ -479,7 +479,7 @@
 </footer>
 
 <script>
-  const state = { extract: { file: null }, convert: { files: [], csv: null, downloadName: 'statements_merged.csv' } };
+  const state = { extract: { files: [] }, convert: { files: [], csv: null, downloadName: 'statements_merged.csv' } };
 
   // Tab switching
   function switchTab(tab) {
@@ -503,10 +503,14 @@
         ? formatSize(files[0].size)
         : formatSize(totalSize);
     } else {
-      const file = files[0];
-      state.extract.file = file;
-      document.getElementById('fn-extract').textContent = file.name;
-      document.getElementById('fs-extract').textContent = formatSize(file.size);
+      state.extract.files = files;
+      const totalSize = files.reduce((sum, f) => sum + f.size, 0);
+      document.getElementById('fn-extract').textContent = files.length === 1
+        ? files[0].name
+        : `${files.length} files selected`;
+      document.getElementById('fs-extract').textContent = files.length === 1
+        ? formatSize(files[0].size)
+        : formatSize(totalSize);
     }
 
     document.getElementById('fi-' + mode).classList.add('visible');
@@ -519,7 +523,7 @@
       state.convert.files = [];
       state.convert.csv = null;
     } else {
-      state.extract.file = null;
+      state.extract.files = [];
     }
     document.getElementById('fi-' + mode).classList.remove('visible');
     document.getElementById('btn-' + mode).disabled = true;
@@ -573,16 +577,25 @@
 
   // Extract text
   async function doExtract() {
-    const file = state.extract.file;
-    if (!file) return;
+    const files = state.extract.files || [];
+    if (!files.length) return;
     const btn = document.getElementById('btn-extract');
     btn.disabled = true;
     show('prog-extract'); hide('err-extract'); hide('res-extract');
 
     try {
       const form = new FormData();
-      form.append('file', file);
-      const res = await fetch('/api/extract', { method: 'POST', body: form });
+      let endpoint;
+
+      if (files.length > 1) {
+        for (const file of files) form.append('files', file);
+        endpoint = '/api/extract-bulk';
+      } else {
+        form.append('file', files[0]);
+        endpoint = '/api/extract';
+      }
+
+      const res = await fetch(endpoint, { method: 'POST', body: form });
       if (!res.ok) {
         const err = await res.json();
         throw new Error(err.detail || 'Extraction failed');
@@ -591,11 +604,15 @@
       document.getElementById('rt-extract').innerHTML = mdToHtml(data.text);
       state.extract.resultText = data.text;
       state.extract.plainText = data.plain_text;
-      state.extract.resultName = data.filename;
+      state.extract.resultName = files.length > 1 ? 'merged_extraction' : (data.filename || 'extracted');
       // Show table badge
       const badge = document.getElementById('table-badge');
       if (data.table_count > 0) {
-        badge.textContent = data.table_count + ' table' + (data.table_count > 1 ? 's' : '') + ' found';
+        let badgeText = data.table_count + ' table' + (data.table_count > 1 ? 's' : '') + ' found';
+        if (data.file_count && data.file_count > 1) {
+          badgeText += ` across ${data.file_count} files`;
+        }
+        badge.textContent = badgeText;
         badge.style.display = 'inline-block';
       } else {
         badge.style.display = 'none';

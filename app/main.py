@@ -77,6 +77,68 @@ async def extract_structured_endpoint(file: UploadFile = File(...)):
     return doc.to_dict()
 
 
+@app.post("/api/extract-bulk")
+async def extract_bulk(files: List[UploadFile] = File(...)):
+    """Extract text from multiple PDFs/images and return one merged result."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+
+    results = []
+    total_tables = 0
+
+    for file in files:
+        input_path = os.path.join(UPLOAD_DIR, file.filename)
+        with open(input_path, "wb") as f:
+            f.write(await file.read())
+
+        try:
+            doc = extract_structured(input_path)
+            markdown = doc.to_markdown()
+            plain = doc.to_plain_text()
+            table_count = len(doc.all_tables)
+            total_tables += table_count
+            results.append({
+                "filename": file.filename,
+                "text": markdown,
+                "plain_text": plain,
+                "table_count": table_count,
+            })
+        except Exception as e:
+            results.append({
+                "filename": file.filename,
+                "text": "",
+                "plain_text": "",
+                "table_count": 0,
+                "error": str(e),
+            })
+        finally:
+            if os.path.exists(input_path):
+                os.remove(input_path)
+
+    # Build merged output
+    merged_md_parts = []
+    merged_plain_parts = []
+    for r in results:
+        header = f"## 📄 {r['filename']}"
+        if r.get("error"):
+            merged_md_parts.append(f"{header}\n\n⚠️ Extraction failed: {r['error']}")
+            merged_plain_parts.append(f"=== {r['filename']} ===\n\nExtraction failed: {r['error']}")
+        else:
+            merged_md_parts.append(f"{header}\n\n{r['text']}")
+            merged_plain_parts.append(f"=== {r['filename']} ===\n\n{r['plain_text']}")
+
+    merged_md = "\n\n---\n\n".join(merged_md_parts)
+    merged_plain = "\n\n---\n\n".join(merged_plain_parts)
+
+    return {
+        "text": merged_md,
+        "plain_text": merged_plain,
+        "table_count": total_tables,
+        "file_count": len(files),
+        "files": results,
+    }
+
+
 # ===================================================================
 # CONVERSION HELPERS
 # ===================================================================
