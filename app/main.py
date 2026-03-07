@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .extract import extract_structured, extract_structured_from_pdf, extract_text_from_pdf
-from .categorize import predict_category, load_rules, save_rules
+from .categorize import predict_category, derive_payee, load_rules, save_rules
 from .parsers import get_templates, get_parser, auto_detect
 from .parsers.generic import detect_financial_table, parse_financial_table
 from .parsers.helpers import extract_year_from_pdf
@@ -221,7 +221,7 @@ def _txns_to_csv(
     buf = io.StringIO()
     w = csv.writer(buf)
 
-    headers = ["Date", "Payee", "Category", "Memo"]
+    headers = ["Date", "Description", "Payee", "Category", "Memo"]
     if include_source_file:
         headers.append("SourceFile")
     if single_amount_col:
@@ -232,13 +232,15 @@ def _txns_to_csv(
 
     for t in txns:
         date = t["date"]
-        payee = t["payee"]
+        description = t["payee"]  # raw bank description
         memo = t.get("memo", "")
         amount = float(t.get("amount", 0.0))
         is_credit = bool(t.get("credit", False))
-        cat = predict_category(payee, memo, refund_hint=is_credit)
 
-        row = [date, payee, cat, memo]
+        payee = derive_payee(description)
+        cat = predict_category(description=description, payee=payee, memo=memo, refund_hint=is_credit)
+
+        row = [date, description, payee, cat, memo]
         if include_source_file:
             row.append(t.get("source_file", ""))
 
