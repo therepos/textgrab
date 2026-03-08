@@ -48,388 +48,138 @@
     align-items: center;
   }
 
-  .container {
-    width: 100%;
-    max-width: 720px;
-    padding: 0 20px;
-  }
+  .container { width: 100%; max-width: 720px; padding: 0 20px; }
 
-  /* Header */
-  header {
-    padding: 40px 0 32px;
-    text-align: center;
-    position: relative;
-  }
-  header h1 {
-    font-size: 1.5rem;
-    font-weight: 600;
-    letter-spacing: -0.02em;
-  }
+  header { padding: 40px 0 32px; text-align: center; position: relative; }
+  header h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
   header h1 span { color: var(--accent); }
-  header p {
-    color: var(--text-dim);
-    font-size: 0.85rem;
-    margin-top: 6px;
-  }
+  header p { color: var(--text-dim); font-size: 0.85rem; margin-top: 6px; }
   .theme-toggle {
-    position: absolute;
-    top: 40px;
-    right: 0;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--text-dim);
-    width: 36px;
-    height: 36px;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 1.1rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    position: absolute; top: 40px; right: 0;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text-dim); width: 36px; height: 36px;
+    border-radius: 8px; cursor: pointer; font-size: 1.1rem;
+    display: flex; align-items: center; justify-content: center;
     transition: all 0.2s;
   }
-  .theme-toggle:hover {
-    color: var(--text);
-    border-color: var(--accent);
-  }
+  .theme-toggle:hover { color: var(--text); border-color: var(--accent); }
 
-  /* Tabs */
-  .tabs {
-    display: flex;
-    gap: 4px;
-    background: var(--surface);
-    border-radius: var(--radius);
-    padding: 4px;
-    margin-bottom: 24px;
-  }
+  .tabs { display: flex; gap: 4px; background: var(--surface); border-radius: var(--radius); padding: 4px; margin-bottom: 24px; }
   .tab {
-    flex: 1;
-    padding: 10px 16px;
-    border: none;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--text-dim);
-    font-family: inherit;
-    font-size: 0.875rem;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.2s;
+    flex: 1; padding: 10px 16px; border: none; border-radius: 7px;
+    background: transparent; color: var(--text-dim);
+    font-family: inherit; font-size: 0.875rem; font-weight: 500;
+    cursor: pointer; transition: all 0.2s;
   }
   .tab:hover { color: var(--text); }
-  .tab.active {
-    background: var(--accent-dim);
-    color: var(--accent);
-  }
+  .tab.active { background: var(--accent-dim); color: var(--accent); }
 
-  /* Panels */
   .panel { display: none; }
   .panel.active { display: block; }
 
-  /* Drop zone */
   .dropzone {
-    border: 2px dashed var(--border);
-    border-radius: var(--radius);
-    padding: 48px 24px;
-    text-align: center;
-    cursor: pointer;
-    transition: all 0.2s;
-    position: relative;
+    border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 48px 24px; text-align: center; cursor: pointer;
+    transition: all 0.2s; position: relative;
   }
-  .dropzone:hover, .dropzone.dragover {
-    border-color: var(--accent);
-    background: var(--accent-dim);
-  }
-  .dropzone input {
-    position: absolute;
-    inset: 0;
-    opacity: 0;
-    cursor: pointer;
-  }
-  .dropzone-icon {
-    font-size: 2rem;
-    margin-bottom: 12px;
-    opacity: 0.6;
-  }
-  .dropzone-text {
-    font-size: 0.9rem;
-    color: var(--text-dim);
-  }
-  .dropzone-text strong {
-    color: var(--accent);
-    font-weight: 500;
-  }
-  .dropzone-hint {
-    font-size: 0.75rem;
-    color: var(--text-dim);
-    margin-top: 8px;
-    opacity: 0.6;
-  }
+  .dropzone:hover, .dropzone.dragover { border-color: var(--accent); background: var(--accent-dim); }
+  .dropzone input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .dropzone-icon { font-size: 2rem; margin-bottom: 12px; opacity: 0.6; }
+  .dropzone-text { font-size: 0.9rem; color: var(--text-dim); }
+  .dropzone-text strong { color: var(--accent); font-weight: 500; }
+  .dropzone-hint { font-size: 0.75rem; color: var(--text-dim); margin-top: 8px; opacity: 0.6; }
 
-  /* File selected */
   .file-info {
-    display: none;
-    align-items: center;
-    gap: 12px;
-    padding: 12px 16px;
-    background: var(--surface);
-    border-radius: var(--radius);
-    margin-top: 12px;
-    font-size: 0.85rem;
+    display: none; align-items: center; gap: 12px;
+    padding: 12px 16px; background: var(--surface);
+    border-radius: var(--radius); margin-top: 12px; font-size: 0.85rem;
   }
   .file-info.visible { display: flex; }
-  .file-info .name {
-    flex: 1;
-    font-family: 'IBM Plex Mono', monospace;
-    color: var(--text);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
+  .file-info .name { flex: 1; font-family: 'IBM Plex Mono', monospace; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .file-info .size { color: var(--text-dim); }
-  .file-info .remove {
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    cursor: pointer;
-    font-size: 1.1rem;
-    padding: 2px 6px;
-    border-radius: 4px;
-  }
+  .file-info .remove { background: none; border: none; color: var(--text-dim); cursor: pointer; font-size: 1.1rem; padding: 2px 6px; border-radius: 4px; }
   .file-info .remove:hover { color: var(--red); background: rgba(248,113,113,0.1); }
 
-  /* Options row */
-  .options {
-    display: flex;
-    gap: 12px;
-    margin-top: 16px;
-    align-items: center;
+  .options { display: flex; gap: 12px; margin-top: 16px; align-items: center; flex-wrap: wrap; }
+  .options label { font-size: 0.8rem; color: var(--text-dim); }
+  .options select {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text);
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem;
+    padding: 6px 10px; min-width: 160px;
   }
-  .options label {
-    font-size: 0.8rem;
-    color: var(--text-dim);
-  }
-  .options select, .options input[type="number"] {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.8rem;
-    padding: 6px 10px;
-    width: auto; min-width: 160px;
-  }
-  .options select:focus, .options input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
+  .options select:focus { outline: none; border-color: var(--accent); }
+  .options select:disabled { opacity: 0.35; cursor: not-allowed; }
+  .options select option:disabled { color: var(--text-dim); }
 
-  /* Submit button */
   .submit-btn {
-    width: 100%;
-    margin-top: 20px;
-    padding: 12px;
-    border: none;
-    border-radius: var(--radius);
-    background: var(--accent);
-    color: #fff;
-    font-family: inherit;
-    font-size: 0.9rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
+    width: 100%; margin-top: 20px; padding: 12px;
+    border: none; border-radius: var(--radius);
+    background: var(--accent); color: #fff;
+    font-family: inherit; font-size: 0.9rem; font-weight: 600;
+    cursor: pointer; transition: all 0.2s;
   }
   .submit-btn:hover { background: var(--accent-hover); }
-  .submit-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
+  .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  /* Progress */
-  .progress {
-    display: none;
-    margin-top: 16px;
-  }
+  .progress { display: none; margin-top: 16px; }
   .progress.visible { display: block; }
-  .progress-bar {
-    height: 3px;
-    background: var(--surface);
-    border-radius: 2px;
-    overflow: hidden;
-  }
-  .progress-bar-fill {
-    height: 100%;
-    background: var(--accent);
-    border-radius: 2px;
-    animation: indeterminate 1.5s ease-in-out infinite;
-    width: 40%;
-  }
-  @keyframes indeterminate {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(350%); }
-  }
-  .progress-text {
-    font-size: 0.8rem;
-    color: var(--text-dim);
-    margin-top: 8px;
-    text-align: center;
-  }
+  .progress-bar { height: 3px; background: var(--surface); border-radius: 2px; overflow: hidden; }
+  .progress-bar-fill { height: 100%; background: var(--accent); border-radius: 2px; animation: indeterminate 1.5s ease-in-out infinite; width: 40%; }
+  @keyframes indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }
+  .progress-text { font-size: 0.8rem; color: var(--text-dim); margin-top: 8px; text-align: center; }
 
-  /* Result area */
-  .result {
-    display: none;
-    margin-top: 20px;
-  }
+  .result { display: none; margin-top: 20px; }
   .result.visible { display: block; }
-  .result-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 10px;
-  }
-  .result-header h3 {
-    font-size: 0.85rem;
-    font-weight: 500;
-    color: var(--green);
-  }
-  .result-actions {
-    display: flex;
-    gap: 6px;
-  }
+  .result-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .result-header h3 { font-size: 0.85rem; font-weight: 500; color: var(--green); }
+  .result-actions { display: flex; gap: 6px; }
   .result-actions button {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--text-dim);
-    font-family: inherit;
-    font-size: 0.75rem;
-    padding: 5px 12px;
-    border-radius: 6px;
-    cursor: pointer;
-    transition: all 0.15s;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text-dim); font-family: inherit; font-size: 0.75rem;
+    padding: 5px 12px; border-radius: 6px; cursor: pointer; transition: all 0.15s;
   }
-  .result-actions button:hover {
-    color: var(--text);
-    border-color: var(--accent);
-  }
+  .result-actions button:hover { color: var(--text); border-color: var(--accent); }
   .result-text {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 16px;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 0.8rem;
-    line-height: 1.6;
-    color: var(--text);
-    max-height: 400px;
-    overflow-y: auto;
-    white-space: pre-wrap;
-    word-break: break-word;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px;
+    font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem;
+    line-height: 1.6; color: var(--text);
+    max-height: 400px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-word;
   }
-  .result-text table {
-    border-collapse: collapse;
-    width: 100%;
-    margin: 12px 0;
-    font-size: 0.78rem;
-    white-space: nowrap;
-  }
-  .result-text th, .result-text td {
-    border: 1px solid var(--border);
-    padding: 6px 10px;
-    text-align: left;
-  }
-  .result-text th {
-    background: var(--accent-dim);
-    color: var(--accent);
-    font-weight: 600;
-  }
-  .result-text tr:hover td {
-    background: var(--surface-hover);
-  }
-  .result-text hr {
-    border: none;
-    border-top: 1px solid var(--border);
-    margin: 16px 0;
-  }
-  .badge {
-    display: inline-block;
-    background: var(--accent-dim);
-    color: var(--accent);
-    font-size: 0.7rem;
-    font-weight: 600;
-    padding: 2px 8px;
-    border-radius: 10px;
-    margin-left: 8px;
-  }
+  .result-text table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 0.78rem; white-space: nowrap; }
+  .result-text th, .result-text td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  .result-text th { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+  .result-text tr:hover td { background: var(--surface-hover); }
+  .result-text hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 
-  /* Error */
-  .error {
-    display: none;
-    margin-top: 16px;
-    padding: 12px 16px;
-    background: rgba(248,113,113,0.08);
-    border: 1px solid rgba(248,113,113,0.2);
-    border-radius: var(--radius);
-    color: var(--red);
-    font-size: 0.85rem;
+  .badge {
+    display: inline-block; background: var(--accent-dim); color: var(--accent);
+    font-size: 0.7rem; font-weight: 600; padding: 2px 8px;
+    border-radius: 10px; margin-left: 8px;
   }
+  .stats { font-size: 0.78rem; color: var(--text-dim); margin-top: 8px; line-height: 1.6; }
+
+  .error { display: none; margin-top: 16px; padding: 12px 16px; background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.2); border-radius: var(--radius); color: var(--red); font-size: 0.85rem; }
   .error.visible { display: block; }
 
-  /* Footer */
-  footer {
-    margin-top: auto;
-    padding: 32px 0 20px;
-    text-align: center;
-    font-size: 0.75rem;
-    color: var(--text-dim);
-    opacity: 0.5;
-  }
+  footer { margin-top: auto; padding: 32px 0 20px; text-align: center; font-size: 0.75rem; color: var(--text-dim); opacity: 0.5; }
 
-  /* Scrollbar */
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-  /* Separate file results */
-  .file-result {
-    margin-top: 16px;
-  }
-  .file-result-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 6px;
-  }
-  .file-result-header h4 {
-    font-size: 0.8rem;
-    font-weight: 500;
-    color: var(--text);
-    font-family: 'IBM Plex Mono', monospace;
-  }
-  .file-result-header .file-result-actions {
-    display: flex;
-    gap: 6px;
-  }
+  .file-result { margin-top: 16px; }
+  .file-result-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .file-result-header h4 { font-size: 0.8rem; font-weight: 500; color: var(--text); font-family: 'IBM Plex Mono', monospace; }
+  .file-result-header .file-result-actions { display: flex; gap: 6px; }
   .file-result-header .file-result-actions button {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--text-dim);
-    font-family: inherit;
-    font-size: 0.7rem;
-    padding: 3px 10px;
-    border-radius: 5px;
-    cursor: pointer;
-    transition: all 0.15s;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text-dim); font-family: inherit; font-size: 0.7rem;
+    padding: 3px 10px; border-radius: 5px; cursor: pointer; transition: all 0.15s;
   }
-  .file-result-header .file-result-actions button:hover {
-    color: var(--text);
-    border-color: var(--accent);
-  }
-  .file-result-error {
-    font-size: 0.8rem;
-    color: var(--red);
-    padding: 8px 12px;
-    background: rgba(248,113,113,0.08);
-    border-radius: 6px;
-  }
+  .file-result-header .file-result-actions button:hover { color: var(--text); border-color: var(--accent); }
 </style>
 </head>
 <body>
@@ -437,155 +187,377 @@
 <div class="container">
   <header>
     <h1>text<span>grab</span></h1>
-    <p>Extract text from documents &amp; images. Privately.</p>
+    <p>Extract text &amp; data from documents. Privately.</p>
     <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">☀️</button>
   </header>
 
   <div class="tabs">
-    <button class="tab active" onclick="switchTab('extract')">Extract Text</button>
-    <button class="tab" onclick="switchTab('convert')">Bank Statement → CSV</button>
+    <button class="tab active" onclick="switchTab('text')">Text</button>
+    <button class="tab" onclick="switchTab('tabular')">Tabular</button>
   </div>
 
-  <!-- EXTRACT TEXT PANEL -->
-  <div id="panel-extract" class="panel active">
-    <div class="dropzone" id="dz-extract">
-      <input type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp,.webp" multiple onchange="fileSelected('extract', this)">
+  <!-- TAB 1: TEXT -->
+  <div id="panel-text" class="panel active">
+    <div class="dropzone" id="dz-text">
+      <input type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp,.webp,.mhtml,.mht,.html,.htm,.docx" multiple onchange="textFileSelected(this)">
       <div class="dropzone-icon">📄</div>
       <div class="dropzone-text">Drop file(s) or <strong>browse</strong></div>
-      <div class="dropzone-hint">PDF, JPG, PNG, TIFF, BMP, WebP • supports multiple files</div>
+      <div class="dropzone-hint">PDF, images, MHTML, HTML, DOCX</div>
     </div>
-    <div class="file-info" id="fi-extract">
-      <span class="name" id="fn-extract"></span>
-      <span class="size" id="fs-extract"></span>
-      <button class="remove" onclick="clearFile('extract')">✕</button>
+    <div class="file-info" id="fi-text">
+      <span class="name" id="fn-text"></span>
+      <span class="size" id="fs-text"></span>
+      <button class="remove" onclick="clearText()">✕</button>
     </div>
-    <div class="options" id="extract-options" style="display:none">
-      <label for="extract-merge">Output</label>
-      <select id="extract-merge">
-        <option value="merged">Merged (one file)</option>
-        <option value="separate">Separate (per file)</option>
+    <div class="options" id="text-options">
+      <label for="text-scheme">Scheme</label>
+      <select id="text-scheme" onchange="onSchemeChange()">
+        <option value="raw">Raw Text</option>
       </select>
+      <div id="text-output-wrap" style="display:none">
+        <label for="text-output">Output</label>
+        <select id="text-output">
+          <option value="consolidated">Consolidated</option>
+          <option value="individual">Individual</option>
+        </select>
+      </div>
     </div>
-    <button class="submit-btn" id="btn-extract" disabled onclick="doExtract()">Extract Text</button>
-    <div class="progress" id="prog-extract">
+    <button class="submit-btn" id="btn-text" disabled onclick="doText()">Extract</button>
+    <div class="progress" id="prog-text">
       <div class="progress-bar"><div class="progress-bar-fill"></div></div>
-      <div class="progress-text">Extracting text…</div>
+      <div class="progress-text">Extracting…</div>
     </div>
-    <div class="error" id="err-extract"></div>
-    <div class="result" id="res-extract">
+    <div class="error" id="err-text"></div>
+    <div class="result" id="res-text">
       <div class="result-header">
-        <h3>✓ Extraction complete<span class="badge" id="table-badge" style="display:none"></span></h3>
-        <div class="result-actions" id="extract-actions-merged">
-          <button onclick="copyResult()">Copy</button>
-          <button onclick="downloadResult()">Download .txt</button>
+        <h3 id="res-text-title">✓ Extraction complete</h3>
+        <div class="result-actions">
+          <button onclick="copyTextResult()">Copy</button>
+          <button onclick="downloadTextResult()">Download</button>
         </div>
       </div>
-      <div class="result-text" id="rt-extract"></div>
+      <div class="stats" id="res-text-stats"></div>
+      <div class="result-text" id="rt-text"></div>
     </div>
-    <div class="result" id="res-extract-separate"></div>
+    <div class="result" id="res-text-files"></div>
   </div>
 
-  <!-- BANK STATEMENT PANEL -->
-  <div id="panel-convert" class="panel">
-    <div class="dropzone" id="dz-convert">
-      <input type="file" accept=".pdf" multiple onchange="fileSelected('convert', this)">
-      <div class="dropzone-icon">🏦</div>
-      <div class="dropzone-text">Drop bank statement PDF(s) or <strong>browse</strong></div>
-      <div class="dropzone-hint">Upload one or many PDFs • merged into one CSV</div>
+  <!-- TAB 2: TABULAR -->
+  <div id="panel-tabular" class="panel">
+    <div class="dropzone" id="dz-tabular">
+      <input type="file" accept=".pdf,.jpg,.jpeg,.png,.tiff,.tif,.bmp,.webp" multiple onchange="tabularFileSelected(this)">
+      <div class="dropzone-icon">📊</div>
+      <div class="dropzone-text">Drop file(s) or <strong>browse</strong></div>
+      <div class="dropzone-hint">PDF, images • table extraction + bank statement conversion</div>
     </div>
-    <div class="file-info" id="fi-convert">
-      <span class="name" id="fn-convert"></span>
-      <span class="size" id="fs-convert"></span>
-      <button class="remove" onclick="clearFile('convert')">✕</button>
+    <div class="file-info" id="fi-tabular">
+      <span class="name" id="fn-tabular"></span>
+      <span class="size" id="fs-tabular"></span>
+      <button class="remove" onclick="clearTabular()">✕</button>
     </div>
     <div class="options">
-      <label for="template">Template</label>
-      <select id="template">
+      <label for="tabular-template">Template</label>
+      <select id="tabular-template">
         <option value="auto">Auto-detect</option>
       </select>
     </div>
-    <button class="submit-btn" id="btn-convert" disabled onclick="doConvert()">Convert to CSV</button>
-    <div class="progress" id="prog-convert">
+    <button class="submit-btn" id="btn-tabular" disabled onclick="doTabular()">Convert to CSV</button>
+    <div class="progress" id="prog-tabular">
       <div class="progress-bar"><div class="progress-bar-fill"></div></div>
-      <div class="progress-text">Processing statement(s)…</div>
+      <div class="progress-text">Processing…</div>
     </div>
-    <div class="error" id="err-convert"></div>
-    <div class="result" id="res-convert">
+    <div class="error" id="err-tabular"></div>
+    <div class="result" id="res-tabular">
       <div class="result-header">
         <h3>✓ Conversion complete</h3>
         <div class="result-actions">
           <button onclick="downloadCsv()">Download CSV</button>
         </div>
       </div>
-      <div class="result-text" id="rt-convert"></div>
+      <div class="result-text" id="rt-tabular"></div>
     </div>
   </div>
 </div>
 
 <footer>
-  textgrab v2.1 — all processing runs locally<br>
-  <a href="https://github.com/therepos/textgrab" target="_blank" style="color: inherit; text-decoration: underline;">
-    View on GitHub
-  </a>
+  textgrab v4.0 — all processing runs locally<br>
+  <a href="https://github.com/therepos/textgrab" target="_blank" style="color: inherit; text-decoration: underline;">View on GitHub</a>
 </footer>
 
 <script>
-  const state = { extract: { files: [] }, convert: { files: [], csv: null, downloadName: 'statements_merged.csv' } };
+  const state = {
+    text: { files: [], result: null, resultName: '' },
+    tabular: { files: [], csv: null, downloadName: 'statement.csv' },
+    schemes: {},
+  };
 
   // Tab switching
   function switchTab(tab) {
-    document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', i === (tab === 'extract' ? 0 : 1)));
+    document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', i === (tab === 'text' ? 0 : 1)));
     document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
     document.getElementById('panel-' + tab).classList.add('active');
   }
 
-  // File selection
-  function fileSelected(mode, input) {
+  // ---------------------------------------------------------------
+  // TAB 1: TEXT
+  // ---------------------------------------------------------------
+  function textFileSelected(input) {
     const files = Array.from(input.files || []);
     if (!files.length) return;
-
-    if (mode === 'convert') {
-      state.convert.files = files;
-      const totalSize = files.reduce((sum, f) => sum + f.size, 0);
-      document.getElementById('fn-convert').textContent = files.length === 1
-        ? files[0].name
-        : `${files.length} files selected`;
-      document.getElementById('fs-convert').textContent = files.length === 1
-        ? formatSize(files[0].size)
-        : formatSize(totalSize);
-    } else {
-      state.extract.files = files;
-      const totalSize = files.reduce((sum, f) => sum + f.size, 0);
-      document.getElementById('fn-extract').textContent = files.length === 1
-        ? files[0].name
-        : `${files.length} files selected`;
-      document.getElementById('fs-extract').textContent = files.length === 1
-        ? formatSize(files[0].size)
-        : formatSize(totalSize);
-    }
-
-    document.getElementById('fi-' + mode).classList.add('visible');
-    document.getElementById('btn-' + mode).disabled = false;
-    if (mode === 'extract') {
-      document.getElementById('extract-options').style.display = files.length > 1 ? 'flex' : 'none';
-    }
-    hide('err-' + mode); hide('res-' + mode);
-    if (mode === 'extract') hide('res-extract-separate');
+    state.text.files = files;
+    const totalSize = files.reduce((s, f) => s + f.size, 0);
+    document.getElementById('fn-text').textContent = files.length === 1 ? files[0].name : `${files.length} files selected`;
+    document.getElementById('fs-text').textContent = formatSize(files.length === 1 ? files[0].size : totalSize);
+    document.getElementById('fi-text').classList.add('visible');
+    document.getElementById('btn-text').disabled = false;
+    hide('err-text'); hide('res-text'); hide('res-text-files');
+    updateSchemeDropdown();
   }
 
-  function clearFile(mode) {
-    if (mode === 'convert') {
-      state.convert.files = [];
-      state.convert.csv = null;
-    } else {
-      state.extract.files = [];
-      document.getElementById('extract-options').style.display = 'none';
-      hide('res-extract-separate');
+  function clearText() {
+    state.text.files = [];
+    state.text.result = null;
+    document.getElementById('fi-text').classList.remove('visible');
+    document.getElementById('btn-text').disabled = true;
+    document.getElementById('dz-text').querySelector('input').value = '';
+    hide('err-text'); hide('res-text'); hide('res-text-files');
+    updateSchemeDropdown();
+  }
+
+  function updateSchemeDropdown() {
+    const sel = document.getElementById('text-scheme');
+    const files = state.text.files;
+    const exts = files.map(f => '.' + f.name.split('.').pop().toLowerCase());
+
+    // Enable/disable scheme options based on file types
+    for (const opt of sel.options) {
+      if (opt.value === 'raw') {
+        opt.disabled = false;
+        continue;
+      }
+      const scheme = state.schemes[opt.value];
+      if (!scheme) { opt.disabled = true; continue; }
+      const accepts = scheme.accepts || [];
+      const compatible = exts.length > 0 && exts.every(e => accepts.includes(e));
+      opt.disabled = !compatible;
     }
-    document.getElementById('fi-' + mode).classList.remove('visible');
-    document.getElementById('btn-' + mode).disabled = true;
-    document.getElementById('dz-' + mode).querySelector('input').value = '';
-    hide('err-' + mode); hide('res-' + mode);
+
+    // If current selection is disabled, reset to raw
+    if (sel.selectedOptions[0] && sel.selectedOptions[0].disabled) {
+      sel.value = 'raw';
+    }
+    onSchemeChange();
+  }
+
+  function onSchemeChange() {
+    const scheme = document.getElementById('text-scheme').value;
+    const wrap = document.getElementById('text-output-wrap');
+    const schemeInfo = state.schemes[scheme];
+    if (schemeInfo && schemeInfo.output_options && schemeInfo.output_options.length > 0) {
+      wrap.style.display = 'flex';
+      wrap.style.gap = '8px';
+      wrap.style.alignItems = 'center';
+    } else {
+      wrap.style.display = 'none';
+    }
+  }
+
+  async function doText() {
+    const files = state.text.files;
+    if (!files.length) return;
+    const btn = document.getElementById('btn-text');
+    btn.disabled = true;
+    show('prog-text'); hide('err-text'); hide('res-text'); hide('res-text-files');
+
+    const scheme = document.getElementById('text-scheme').value;
+    const outputMode = document.getElementById('text-output').value;
+
+    try {
+      const form = new FormData();
+      for (const f of files) form.append('files', f);
+      form.append('scheme', scheme);
+      form.append('output_mode', outputMode);
+
+      const res = await fetch('/api/text', { method: 'POST', body: form });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Extraction failed');
+      }
+      const data = await res.json();
+
+      // Individual files mode
+      if (data.files && !data.text) {
+        const container = document.getElementById('res-text-files');
+        let html = '<div class="result-header"><h3>✓ Extraction complete</h3></div>';
+        data.files.forEach((f, i) => {
+          html += `<div class="file-result">
+            <div class="file-result-header">
+              <h4>📄 ${esc(f.filename)}</h4>
+              <div class="file-result-actions">
+                <button onclick="copyIndividual(${i})">Copy</button>
+                <button onclick="downloadIndividual(${i})">Download</button>
+              </div>
+            </div>
+            <div class="result-text">${esc(f.text)}</div>
+          </div>`;
+        });
+        if (data.glossary) {
+          html += `<div class="file-result">
+            <div class="file-result-header">
+              <h4>📋 Glossary</h4>
+              <div class="file-result-actions">
+                <button onclick="copyGlossary()">Copy</button>
+              </div>
+            </div>
+            <div class="result-text">${esc(data.glossary)}</div>
+          </div>`;
+          state.text.glossary = data.glossary;
+        }
+        container.innerHTML = html;
+        state.text.individualFiles = data.files;
+        show('res-text-files');
+      } else {
+        // Consolidated / single file
+        document.getElementById('rt-text').textContent = data.text || '';
+        state.text.result = data.text || '';
+        state.text.resultName = data.filename || 'extracted';
+
+        // Stats
+        const statsEl = document.getElementById('res-text-stats');
+        if (data.stats && Array.isArray(data.stats)) {
+          statsEl.textContent = data.stats.join(' • ');
+          statsEl.style.display = 'block';
+        } else if (data.total_entries) {
+          statsEl.textContent = `${data.total_entries} glossary entries`;
+          statsEl.style.display = 'block';
+        } else {
+          statsEl.style.display = 'none';
+        }
+
+        // Title
+        const title = document.getElementById('res-text-title');
+        title.innerHTML = '✓ Extraction complete';
+        if (data.total_entries) {
+          title.innerHTML += ` <span class="badge">${data.total_entries} entries</span>`;
+        }
+
+        show('res-text');
+      }
+    } catch (e) {
+      showError('err-text', e.message);
+    } finally {
+      hide('prog-text');
+      btn.disabled = false;
+    }
+  }
+
+  function copyTextResult() { navigator.clipboard.writeText(state.text.result || ''); }
+  function downloadTextResult() {
+    const name = (state.text.resultName || 'extracted').replace(/\.[^.]+$/, '');
+    const scheme = document.getElementById('text-scheme').value;
+    const ext = scheme === 'raw' ? '.txt' : '.md';
+    downloadBlob(state.text.result || '', name + ext, 'text/plain');
+  }
+  function copyIndividual(i) {
+    const f = (state.text.individualFiles || [])[i];
+    if (f) navigator.clipboard.writeText(f.text || '');
+  }
+  function downloadIndividual(i) {
+    const f = (state.text.individualFiles || [])[i];
+    if (!f) return;
+    downloadBlob(f.text || '', f.filename || 'extracted.md', 'text/plain');
+  }
+  function copyGlossary() { navigator.clipboard.writeText(state.text.glossary || ''); }
+
+  // ---------------------------------------------------------------
+  // TAB 2: TABULAR
+  // ---------------------------------------------------------------
+  function tabularFileSelected(input) {
+    const files = Array.from(input.files || []);
+    if (!files.length) return;
+    state.tabular.files = files;
+    const totalSize = files.reduce((s, f) => s + f.size, 0);
+    document.getElementById('fn-tabular').textContent = files.length === 1 ? files[0].name : `${files.length} files selected`;
+    document.getElementById('fs-tabular').textContent = formatSize(files.length === 1 ? files[0].size : totalSize);
+    document.getElementById('fi-tabular').classList.add('visible');
+    document.getElementById('btn-tabular').disabled = false;
+    hide('err-tabular'); hide('res-tabular');
+  }
+
+  function clearTabular() {
+    state.tabular.files = [];
+    state.tabular.csv = null;
+    document.getElementById('fi-tabular').classList.remove('visible');
+    document.getElementById('btn-tabular').disabled = true;
+    document.getElementById('dz-tabular').querySelector('input').value = '';
+    hide('err-tabular'); hide('res-tabular');
+  }
+
+  async function doTabular() {
+    const files = state.tabular.files;
+    if (!files.length) return;
+    const btn = document.getElementById('btn-tabular');
+    btn.disabled = true;
+    show('prog-tabular'); hide('err-tabular'); hide('res-tabular');
+
+    try {
+      const form = new FormData();
+      const template = document.getElementById('tabular-template').value;
+      if (files.length > 1) {
+        for (const f of files) form.append('pdfs', f);
+        form.append('template', template);
+        form.append('single_amount_col', 'true');
+        form.append('merge', 'true');
+        form.append('dedupe', 'true');
+        form.append('include_source_file', 'true');
+      } else {
+        form.append('pdf', files[0]);
+        form.append('template', template);
+        form.append('single_amount_col', 'true');
+      }
+      const endpoint = files.length > 1 ? '/api/tabular/convert-bulk' : '/api/tabular/convert';
+      const res = await fetch(endpoint, { method: 'POST', body: form });
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = 'Conversion failed';
+        try { msg = JSON.parse(text).detail || msg; } catch {}
+        throw new Error(msg);
+      }
+      const csvText = await res.text();
+      state.tabular.csv = csvText;
+      state.tabular.downloadName = files.length > 1 ? 'statements_merged.csv' : 'statement.csv';
+      document.getElementById('rt-tabular').textContent = csvText;
+      show('res-tabular');
+    } catch (e) {
+      showError('err-tabular', e.message);
+    } finally {
+      hide('prog-tabular');
+      btn.disabled = false;
+    }
+  }
+
+  function downloadCsv() {
+    downloadBlob(state.tabular.csv || '', state.tabular.downloadName || 'statement.csv', 'text/csv');
+  }
+
+  // ---------------------------------------------------------------
+  // SHARED HELPERS
+  // ---------------------------------------------------------------
+  function show(id) { document.getElementById(id).classList.add('visible'); }
+  function hide(id) { document.getElementById(id).classList.remove('visible'); }
+  function showError(id, msg) { const el = document.getElementById(id); el.textContent = msg; el.classList.add('visible'); }
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+  }
+  function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function downloadBlob(content, filename, type) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([content], { type }));
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(a.href);
   }
 
   // Drag and drop
@@ -601,224 +573,32 @@
     });
   });
 
-  // Markdown table to HTML
-  function mdToHtml(md) {
-    // Split into sections by ---
-    const sections = md.split(/\n\n---\n\n/);
-    return sections.map(section => {
-      const parts = section.split(/\n\n/);
-      return parts.map(part => {
-        const lines = part.trim().split('\n');
-        // Detect markdown table: first line starts with |
-        if (lines.length >= 3 && lines[0].startsWith('|') && lines[1].match(/^\|\s*---/)) {
-          const headers = lines[0].split('|').filter(c => c.trim()).map(c => c.trim());
-          const rows = lines.slice(2).map(line =>
-            line.split('|').filter(c => c.trim()).map(c => c.trim())
-          );
-          let html = '<table><thead><tr>' + headers.map(h => `<th>${esc(h)}</th>`).join('') + '</tr></thead><tbody>';
-          for (const row of rows) {
-            html += '<tr>' + row.map(c => `<td>${esc(c)}</td>`).join('') + '</tr>';
-          }
-          html += '</tbody></table>';
-          return html;
-        }
-        // Plain text block
-        return '<pre>' + esc(part) + '</pre>';
-      }).join('');
-    }).join('<hr>');
-  }
-
-  function esc(s) {
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  }
-
-  // Extract text
-  async function doExtract() {
-    const files = state.extract.files || [];
-    if (!files.length) return;
-    const btn = document.getElementById('btn-extract');
-    btn.disabled = true;
-    show('prog-extract'); hide('err-extract'); hide('res-extract'); hide('res-extract-separate');
-
-    const wantMerge = files.length === 1 || document.getElementById('extract-merge').value === 'merged';
-
-    try {
-      const form = new FormData();
-      let endpoint;
-
-      if (files.length > 1) {
-        for (const file of files) form.append('files', file);
-        form.append('merge', wantMerge ? 'true' : 'false');
-        endpoint = '/api/extract-bulk';
-      } else {
-        form.append('file', files[0]);
-        endpoint = '/api/extract';
-      }
-
-      const res = await fetch(endpoint, { method: 'POST', body: form });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Extraction failed');
-      }
-      const data = await res.json();
-
-      // Table badge
-      const badge = document.getElementById('table-badge');
-      if (data.table_count > 0) {
-        let badgeText = data.table_count + ' table' + (data.table_count > 1 ? 's' : '') + ' found';
-        if (data.file_count && data.file_count > 1) badgeText += ` across ${data.file_count} files`;
-        badge.textContent = badgeText;
-        badge.style.display = 'inline-block';
-      } else {
-        badge.style.display = 'none';
-      }
-
-      if (data.merged === false) {
-        // Separate mode: render individual file cards
-        state.extract.separateFiles = data.files;
-        const container = document.getElementById('res-extract-separate');
-        let html = '<div class="result-header"><h3>✓ Extraction complete' +
-          (badge.style.display !== 'none' ? ' <span class="badge">' + badge.textContent + '</span>' : '') +
-          '</h3></div>';
-        data.files.forEach((f, i) => {
-          html += '<div class="file-result">';
-          html += '<div class="file-result-header">';
-          html += '<h4>📄 ' + esc(f.filename) + '</h4>';
-          if (!f.error) {
-            html += '<div class="file-result-actions">';
-            html += '<button onclick="copySeparate(' + i + ')">Copy</button>';
-            html += '<button onclick="downloadSeparate(' + i + ')">Download .txt</button>';
-            html += '</div>';
-          }
-          html += '</div>';
-          if (f.error) {
-            html += '<div class="file-result-error">⚠️ ' + esc(f.error) + '</div>';
-          } else {
-            html += '<div class="result-text">' + mdToHtml(f.text) + '</div>';
-          }
-          html += '</div>';
-        });
-        container.innerHTML = html;
-        badge.style.display = 'none'; // badge shown inline above
-        show('res-extract-separate');
-      } else {
-        // Merged mode (or single file)
-        document.getElementById('rt-extract').innerHTML = mdToHtml(data.text);
-        state.extract.resultText = data.text;
-        state.extract.plainText = data.plain_text;
-        state.extract.resultName = files.length > 1 ? 'merged_extraction' : (data.filename || 'extracted');
-        show('res-extract');
-      }
-    } catch (e) {
-      showError('err-extract', e.message);
-    } finally {
-      hide('prog-extract');
-      btn.disabled = false;
-    }
-  }
-
-  function copySeparate(index) {
-    const f = (state.extract.separateFiles || [])[index];
-    if (f) navigator.clipboard.writeText(f.text || '');
-  }
-  function downloadSeparate(index) {
-    const f = (state.extract.separateFiles || [])[index];
-    if (!f) return;
-    const name = (f.filename || 'extracted').replace(/\.[^.]+$/, '') + '.txt';
-    downloadBlob(f.plain_text || f.text || '', name, 'text/plain');
-  }
-
-  // Convert bank statement
-  async function doConvert() {
-    const files = state.convert.files || [];
-    if (!files.length) return;
-    const btn = document.getElementById('btn-convert');
-    btn.disabled = true;
-    show('prog-convert'); hide('err-convert'); hide('res-convert');
-
-    try {
-      const form = new FormData();
-      if (files.length > 1) {
-        for (const file of files) form.append('pdfs', file);
-      } else {
-        form.append('pdf', files[0]);
-      }
-      form.append('template', document.getElementById('template').value);
-      form.append('single_amount_col', 'true');
-      if (files.length > 1) {
-        form.append('merge', 'true');
-        form.append('dedupe', 'true');
-        form.append('include_source_file', 'true');
-      }
-      const endpoint = files.length > 1 ? '/api/convert-bulk' : '/api/convert';
-      const res = await fetch(endpoint, { method: 'POST', body: form });
-      if (!res.ok) {
-        const text = await res.text();
-        let msg = 'Conversion failed';
-        try { msg = JSON.parse(text).detail || msg; } catch {}
-        throw new Error(msg);
-      }
-      const csvText = await res.text();
-      state.convert.csv = csvText;
-      state.convert.downloadName = files.length > 1 ? 'statements_merged.csv' : 'statement.csv';
-      document.getElementById('rt-convert').textContent = csvText;
-      show('res-convert');
-    } catch (e) {
-      showError('err-convert', e.message);
-    } finally {
-      hide('prog-convert');
-      btn.disabled = false;
-    }
-  }
-
-  // Actions
-  function copyResult() {
-    navigator.clipboard.writeText(state.extract.resultText || '');
-  }
-  function downloadResult() {
-    const text = state.extract.resultText || '';
-    const name = (state.extract.resultName || 'extracted').replace(/\.[^.]+$/, '') + '.txt';
-    downloadBlob(text, name, 'text/plain');
-  }
-  function downloadCsv() {
-    downloadBlob(state.convert.csv || '', state.convert.downloadName || 'statements_merged.csv', 'text/csv');
-  }
-  function downloadBlob(content, filename, type) {
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([content], { type }));
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  }
-
-  // Helpers
-  function show(id) { document.getElementById(id).classList.add('visible'); }
-  function hide(id) { document.getElementById(id).classList.remove('visible'); }
-  function showError(id, msg) { const el = document.getElementById(id); el.textContent = msg; el.classList.add('visible'); }
-  function formatSize(bytes) {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / 1048576).toFixed(1) + ' MB';
-  }
-
   // Theme
-  function getTheme() {
-    const c = document.cookie.match(/(?:^|; )theme=(\w+)/);
-    return c ? c[1] : 'dark';
-  }
+  function getTheme() { const c = document.cookie.match(/(?:^|; )theme=(\w+)/); return c ? c[1] : 'dark'; }
   function setTheme(t) {
     document.documentElement.setAttribute('data-theme', t);
     document.querySelector('.theme-toggle').textContent = t === 'dark' ? '☀️' : '🌙';
     document.cookie = 'theme=' + t + ';path=/;max-age=31536000';
   }
-  function toggleTheme() {
-    setTheme(getTheme() === 'dark' ? 'light' : 'dark');
-  }
+  function toggleTheme() { setTheme(getTheme() === 'dark' ? 'light' : 'dark'); }
   setTheme(getTheme());
 
-  // Load templates dynamically
+  // Load schemes + templates dynamically
+  fetch('/api/schemes').then(r => r.json()).then(schemes => {
+    state.schemes = schemes;
+    const sel = document.getElementById('text-scheme');
+    for (const [slug, info] of Object.entries(schemes)) {
+      if (slug === 'raw') continue;
+      const opt = document.createElement('option');
+      opt.value = slug;
+      opt.textContent = info.label;
+      opt.disabled = true; // disabled until matching files uploaded
+      sel.appendChild(opt);
+    }
+  }).catch(() => {});
+
   fetch('/api/templates').then(r => r.json()).then(templates => {
-    const sel = document.getElementById('template');
+    const sel = document.getElementById('tabular-template');
     for (const [slug, label] of Object.entries(templates)) {
       if (slug === 'auto') continue;
       const opt = document.createElement('option');
