@@ -180,6 +180,17 @@
     padding: 3px 10px; border-radius: 5px; cursor: pointer; transition: all 0.15s;
   }
   .file-result-header .file-result-actions button:hover { color: var(--text); border-color: var(--accent); }
+
+  .merge-check {
+    display: none; align-items: center; gap: 6px; margin-left: auto;
+  }
+  .merge-check.visible { display: flex; }
+  .merge-check input[type="checkbox"] {
+    accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer;
+  }
+  .merge-check label {
+    font-size: 0.8rem; color: var(--text-dim); cursor: pointer; user-select: none;
+  }
 </style>
 </head>
 <body>
@@ -214,12 +225,9 @@
       <select id="text-scheme" onchange="onSchemeChange()">
         <option value="raw">Raw Text</option>
       </select>
-      <div id="text-output-wrap" style="display:none">
-        <label for="text-output">Output</label>
-        <select id="text-output">
-          <option value="consolidated">Consolidated</option>
-          <option value="individual">Individual</option>
-        </select>
+      <div class="merge-check" id="text-merge-wrap">
+        <input type="checkbox" id="text-merged" checked>
+        <label for="text-merged">Merged</label>
       </div>
     </div>
     <button class="submit-btn" id="btn-text" disabled onclick="doText()">Extract</button>
@@ -260,8 +268,12 @@
       <select id="tabular-template">
         <option value="auto">Auto-detect</option>
       </select>
+      <div class="merge-check" id="tabular-merge-wrap">
+        <input type="checkbox" id="tabular-merged" checked>
+        <label for="tabular-merged">Merged</label>
+      </div>
     </div>
-    <button class="submit-btn" id="btn-tabular" disabled onclick="doTabular()">Convert to CSV</button>
+    <button class="submit-btn" id="btn-tabular" disabled onclick="doTabular()">Convert</button>
     <div class="progress" id="prog-tabular">
       <div class="progress-bar"><div class="progress-bar-fill"></div></div>
       <div class="progress-text">Processing…</div>
@@ -276,6 +288,7 @@
       </div>
       <div class="result-text" id="rt-tabular"></div>
     </div>
+    <div class="result" id="res-tabular-files"></div>
   </div>
 </div>
 
@@ -310,6 +323,9 @@
     document.getElementById('fs-text').textContent = formatSize(files.length === 1 ? files[0].size : totalSize);
     document.getElementById('fi-text').classList.add('visible');
     document.getElementById('btn-text').disabled = false;
+    // Show merge checkbox only for multi-file
+    const mergeWrap = document.getElementById('text-merge-wrap');
+    if (files.length > 1) { mergeWrap.classList.add('visible'); } else { mergeWrap.classList.remove('visible'); }
     hide('err-text'); hide('res-text'); hide('res-text-files');
     updateSchemeDropdown();
   }
@@ -320,6 +336,7 @@
     document.getElementById('fi-text').classList.remove('visible');
     document.getElementById('btn-text').disabled = true;
     document.getElementById('dz-text').querySelector('input').value = '';
+    document.getElementById('text-merge-wrap').classList.remove('visible');
     hide('err-text'); hide('res-text'); hide('res-text-files');
     updateSchemeDropdown();
   }
@@ -350,16 +367,7 @@
   }
 
   function onSchemeChange() {
-    const scheme = document.getElementById('text-scheme').value;
-    const wrap = document.getElementById('text-output-wrap');
-    const schemeInfo = state.schemes[scheme];
-    if (schemeInfo && schemeInfo.output_options && schemeInfo.output_options.length > 0) {
-      wrap.style.display = 'flex';
-      wrap.style.gap = '8px';
-      wrap.style.alignItems = 'center';
-    } else {
-      wrap.style.display = 'none';
-    }
+    // No extra logic needed — merge checkbox handles output mode
   }
 
   async function doText() {
@@ -370,7 +378,8 @@
     show('prog-text'); hide('err-text'); hide('res-text'); hide('res-text-files');
 
     const scheme = document.getElementById('text-scheme').value;
-    const outputMode = document.getElementById('text-output').value;
+    const merged = document.getElementById('text-merged').checked;
+    const outputMode = merged ? 'consolidated' : 'individual';
 
     try {
       const form = new FormData();
@@ -481,7 +490,9 @@
     document.getElementById('fs-tabular').textContent = formatSize(files.length === 1 ? files[0].size : totalSize);
     document.getElementById('fi-tabular').classList.add('visible');
     document.getElementById('btn-tabular').disabled = false;
-    hide('err-tabular'); hide('res-tabular');
+    const mergeWrap = document.getElementById('tabular-merge-wrap');
+    if (files.length > 1) { mergeWrap.classList.add('visible'); } else { mergeWrap.classList.remove('visible'); }
+    hide('err-tabular'); hide('res-tabular'); hide('res-tabular-files');
   }
 
   function clearTabular() {
@@ -490,7 +501,8 @@
     document.getElementById('fi-tabular').classList.remove('visible');
     document.getElementById('btn-tabular').disabled = true;
     document.getElementById('dz-tabular').querySelector('input').value = '';
-    hide('err-tabular'); hide('res-tabular');
+    document.getElementById('tabular-merge-wrap').classList.remove('visible');
+    hide('err-tabular'); hide('res-tabular'); hide('res-tabular-files');
   }
 
   async function doTabular() {
@@ -498,42 +510,103 @@
     if (!files.length) return;
     const btn = document.getElementById('btn-tabular');
     btn.disabled = true;
-    show('prog-tabular'); hide('err-tabular'); hide('res-tabular');
+    show('prog-tabular'); hide('err-tabular'); hide('res-tabular'); hide('res-tabular-files');
+
+    const merged = files.length === 1 || document.getElementById('tabular-merged').checked;
 
     try {
       const form = new FormData();
       const template = document.getElementById('tabular-template').value;
+
       if (files.length > 1) {
         for (const f of files) form.append('pdfs', f);
         form.append('template', template);
         form.append('single_amount_col', 'true');
-        form.append('merge', 'true');
+        form.append('merge', merged ? 'true' : 'false');
         form.append('dedupe', 'true');
         form.append('include_source_file', 'true');
+
+        if (!merged) {
+          // Separate mode: convert each file individually
+          const results = [];
+          for (const f of files) {
+            const singleForm = new FormData();
+            singleForm.append('pdf', f);
+            singleForm.append('template', template);
+            singleForm.append('single_amount_col', 'true');
+            const res = await fetch('/api/tabular/convert', { method: 'POST', body: singleForm });
+            if (res.ok) {
+              const csvText = await res.text();
+              const lines = csvText.trim().split('\n');
+              results.push({ filename: f.name, csv: csvText, rows: Math.max(0, lines.length - 1) });
+            } else {
+              results.push({ filename: f.name, csv: '', rows: 0, error: 'Conversion failed' });
+            }
+          }
+          state.tabular.separateFiles = results;
+          const container = document.getElementById('res-tabular-files');
+          let html = '<div class="result-header"><h3>✓ Conversion complete</h3></div>';
+          results.forEach((f, i) => {
+            html += `<div class="file-result">
+              <div class="file-result-header">
+                <h4>📄 ${esc(f.filename)}${f.rows ? ' (' + f.rows + ' rows)' : ''}</h4>
+                <div class="file-result-actions">
+                  ${f.error ? '' : '<button onclick="downloadTabularSeparate(' + i + ')">Download CSV</button>'}
+                </div>
+              </div>
+              ${f.error ? '<div style="color:var(--red);font-size:0.8rem">⚠️ ' + esc(f.error) + '</div>' : '<div class="result-text">' + esc(f.csv) + '</div>'}
+            </div>`;
+          });
+          container.innerHTML = html;
+          show('res-tabular-files');
+          hide('prog-tabular');
+          btn.disabled = false;
+          return;
+        }
+
+        const endpoint = '/api/tabular/convert-bulk';
+        const res = await fetch(endpoint, { method: 'POST', body: form });
+        if (!res.ok) {
+          const text = await res.text();
+          let msg = 'Conversion failed';
+          try { msg = JSON.parse(text).detail || msg; } catch {}
+          throw new Error(msg);
+        }
+        const csvText = await res.text();
+        state.tabular.csv = csvText;
+        state.tabular.downloadName = 'statements_merged.csv';
+        document.getElementById('rt-tabular').textContent = csvText;
+        show('res-tabular');
       } else {
         form.append('pdf', files[0]);
         form.append('template', template);
         form.append('single_amount_col', 'true');
+        const res = await fetch('/api/tabular/convert', { method: 'POST', body: form });
+        if (!res.ok) {
+          const text = await res.text();
+          let msg = 'Conversion failed';
+          try { msg = JSON.parse(text).detail || msg; } catch {}
+          throw new Error(msg);
+        }
+        const csvText = await res.text();
+        state.tabular.csv = csvText;
+        state.tabular.downloadName = 'statement.csv';
+        document.getElementById('rt-tabular').textContent = csvText;
+        show('res-tabular');
       }
-      const endpoint = files.length > 1 ? '/api/tabular/convert-bulk' : '/api/tabular/convert';
-      const res = await fetch(endpoint, { method: 'POST', body: form });
-      if (!res.ok) {
-        const text = await res.text();
-        let msg = 'Conversion failed';
-        try { msg = JSON.parse(text).detail || msg; } catch {}
-        throw new Error(msg);
-      }
-      const csvText = await res.text();
-      state.tabular.csv = csvText;
-      state.tabular.downloadName = files.length > 1 ? 'statements_merged.csv' : 'statement.csv';
-      document.getElementById('rt-tabular').textContent = csvText;
-      show('res-tabular');
     } catch (e) {
       showError('err-tabular', e.message);
     } finally {
       hide('prog-tabular');
       btn.disabled = false;
     }
+  }
+
+  function downloadTabularSeparate(i) {
+    const f = (state.tabular.separateFiles || [])[i];
+    if (!f || !f.csv) return;
+    const name = (f.filename || 'statement').replace(/\.[^.]+$/, '') + '.csv';
+    downloadBlob(f.csv, name, 'text/csv');
   }
 
   function downloadCsv() {
