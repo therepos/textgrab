@@ -7,7 +7,7 @@ and converts them to transactions — works across bank formats.
 """
 import re
 from typing import List, Dict, Any, Optional
-from app.extract import ExtractedTable
+from app.extracttabular import ExtractedTable
 
 # Common column header patterns (case-insensitive)
 _DATE_PATTERNS = [
