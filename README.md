@@ -39,3 +39,13 @@ Access at `http://localhost:3020`
 | `/api/templates` | GET | List tabular parser templates |
 | `/api/extract` | POST | Legacy — redirects to /api/text |
 | `/api/convert` | POST | Legacy — redirects to /api/tabular/convert |
+
+// Business
+// Crypto
+// Deposits
+// Entertainment
+// Equities
+// Loans
+// Others
+// Rental
+
