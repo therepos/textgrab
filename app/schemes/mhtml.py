@@ -5,13 +5,20 @@ scripts, styles, and other non-content elements. Preserves headings, lists,
 tables, and text structure as clean markdown suitable for knowledge bases
 and LLM prompt context.
 
-Pipeline: MHTML → MIME unwrap → HTML → content extraction → markdown
+Handles CMS/ASP.NET pages where content lives inside layout tables by
+detecting and flattening them into prose while preserving real data tables.
+
+Pipeline: MHTML → MIME unwrap → HTML → content div detection
+        → junk stripping → layout table flattening → markdown
 """
 
 import email
 import logging
 import re
-from typing import Dict, Any
+from typing import Dict, List, Optional
+
+from lxml import etree
+from lxml.html import fromstring, tostring
 
 log = logging.getLogger(__name__)
 
@@ -33,13 +40,10 @@ def _unwrap_mhtml(raw: bytes) -> str:
     text = raw.decode("utf-8", errors="ignore")
     msg = email.message_from_string(text)
 
-    # Walk MIME parts, prefer text/html
     for part in msg.walk():
-        ct = part.get_content_type()
-        if ct == "text/html":
+        if part.get_content_type() == "text/html":
             payload = part.get_payload(decode=True)
             if payload:
-                # Detect charset from Content-Type header
                 charset = part.get_content_charset() or "utf-8"
                 return payload.decode(charset, errors="ignore")
 
@@ -54,123 +58,280 @@ def _unwrap_mhtml(raw: bytes) -> str:
 # Tags whose entire subtree should be removed
 _STRIP_TAGS = {
     "script", "style", "noscript", "iframe", "svg", "canvas",
-    "nav", "header", "footer", "aside", "form", "button", "input",
+    "nav", "header", "footer", "aside", "button", "input",
     "select", "textarea", "label", "fieldset", "legend",
     "menu", "menuitem",
 }
 
 # Class/id substrings that indicate non-content blocks
 _JUNK_PATTERNS = re.compile(
-    r"(nav|menu|sidebar|footer|header|banner|breadcrumb|cookie|"
+    r"(sidebar|banner|breadcrumb|cookie|"
     r"advertisement|advert|social|share|related|comment|"
     r"popup|modal|overlay|toast|toolbar|ribbon|masthead|"
     r"skip-to|jump-to|back-to-top)",
     re.IGNORECASE,
 )
 
+# Class/id patterns that indicate navigation (separate so we can be precise)
+_NAV_PATTERNS = re.compile(
+    r"(^nav$|^nav\b|navbar|mainNav|nav-group|navmenu|"
+    r"^menu$|^menu\b|mainMenu|footerContainer|footerNav)",
+    re.IGNORECASE,
+)
 
-def _html_to_markdown(html: str) -> str:
-    """Convert HTML to structured markdown, stripping non-content."""
-    try:
-        from lxml import etree
-        from lxml.html import fromstring, tostring
-    except ImportError:
-        raise RuntimeError("lxml is required — pip install lxml")
+# Class/id patterns that likely contain the main content
+_CONTENT_HINTS = re.compile(
+    r"(content|article|main-body|mainWrap|theme-content|"
+    r"post-body|entry-content|page-content|story-body|"
+    r"col-md-9|col-md-8|col-lg-9|col-lg-8)",
+    re.IGNORECASE,
+)
 
-    try:
-        doc = fromstring(html)
-    except Exception:
-        # Malformed HTML fallback
-        from lxml.html import document_fromstring
-        doc = document_fromstring(html)
 
-    # --- Phase 1: Remove junk elements ---
+def _find_content_root(doc):
+    """Find the most likely content-bearing element.
+
+    Strategy: look for elements with content-hint classes first,
+    then fall back to the element with the most text that isn't
+    a navigation or footer block.
+    """
+    # Try semantic elements first
+    for tag in ("main", "article"):
+        for el in doc.iter(tag):
+            if len(el.text_content().strip()) > 200:
+                return el
+
+    # Try content-hint class/id
+    best = None
+    best_len = 0
+    for el in doc.iter("div", "section"):
+        attrs = " ".join(filter(None, [
+            el.get("class") or "",
+            el.get("id") or "",
+        ]))
+        if attrs and _CONTENT_HINTS.search(attrs):
+            text_len = len(el.text_content().strip())
+            if text_len > best_len:
+                best = el
+                best_len = text_len
+
+    if best is not None and best_len > 200:
+        return best
+
+    # Fallback: largest text-bearing div
+    for el in doc.iter("div"):
+        text_len = len(el.text_content().strip())
+        if text_len > best_len:
+            best = el
+            best_len = text_len
+
+    return best
+
+
+def _is_layout_table(table) -> bool:
+    """Detect if a table is used for page layout vs actual tabular data.
+
+    Layout tables typically have:
+    - Large colspan values (spanning "columns" that are really page regions)
+    - Varying column counts per row
+    - Rows that are mostly empty (spacer rows)
+    - Numbered paragraph text in cells
+    """
+    rows = list(table.iter("tr"))
+    if len(rows) < 2:
+        return True
+
+    has_large_colspan = False
+    col_counts = []
+
+    for row in rows:
+        cells = list(row.iter("td", "th"))
+        col_counts.append(len(cells))
+        for cell in cells:
+            cs = int(cell.get("colspan") or "1")
+            if cs >= 4:
+                has_large_colspan = True
+
+    if has_large_colspan:
+        return True
+
+    # Highly variable column counts = layout
+    if col_counts and (max(col_counts) - min(col_counts)) > 2:
+        return True
+
+    # Check for spacer rows (rows where all cells are empty/whitespace)
+    empty_rows = 0
+    for row in rows:
+        cells = list(row.iter("td", "th"))
+        if all(not (c.text_content().strip()) or
+               c.text_content().strip() in ("\xa0", " ")
+               for c in cells):
+            empty_rows += 1
+
+    # If more than 30% of rows are spacers, it's layout
+    if len(rows) > 4 and empty_rows / len(rows) > 0.3:
+        return True
+
+    return False
+
+
+def _flatten_layout_table(table) -> str:
+    """Convert a layout table into structured paragraphs.
+
+    Recognises numbered paragraphs (1., 2.1, a), i), etc.)
+    and joins cell contents appropriately.
+    """
+    parts: List[str] = []
+    _NUM_RE = re.compile(r'^(\d+\.|\d+\.\d+|[a-z]\)|[ivx]+\))$')
+
+    for row in table.iter("tr"):
+        cells = list(row.iter("td", "th"))
+        cell_texts = []
+        for cell in cells:
+            t = cell.text_content().strip()
+            if t and t not in ("\xa0", " "):
+                cell_texts.append(t)
+
+        if not cell_texts:
+            continue
+
+        first = cell_texts[0]
+
+        if len(cell_texts) >= 2 and _NUM_RE.match(first):
+            # Numbered paragraph: "2.1" + "paragraph body..."
+            parts.append(f"{first} {' '.join(cell_texts[1:])}")
+        elif len(cell_texts) == 1:
+            # Full-width cell = heading or standalone paragraph
+            parts.append(first)
+        else:
+            parts.append(" ".join(cell_texts))
+
+    return "\n\n".join(parts)
+
+
+def _data_table_to_markdown(table) -> str:
+    """Convert a real data table to a markdown table."""
+    rows = list(table.iter("tr"))
+    if not rows:
+        return ""
+
+    md_rows: List[str] = []
+    for i, row in enumerate(rows):
+        cells = list(row.iter("td", "th"))
+        cell_texts = [c.text_content().strip() for c in cells]
+        md_rows.append("| " + " | ".join(cell_texts) + " |")
+
+        # Add separator after first row (header)
+        if i == 0:
+            md_rows.append("| " + " | ".join("---" for _ in cells) + " |")
+
+    return "\n".join(md_rows)
+
+
+def _strip_junk(doc) -> None:
+    """Remove non-content elements from the document tree in-place."""
 
     # Remove by tag name
     for tag in _STRIP_TAGS:
-        for el in doc.iter(tag):
-            el.getparent().remove(el) if el.getparent() is not None else None
+        for el in list(doc.iter(tag)):
+            if el.getparent() is not None:
+                el.getparent().remove(el)
 
-    # Remove by class/id heuristics
-    for el in doc.iter():
+    # Remove navigation blocks by class/id
+    for el in list(doc.iter()):
         attrs = " ".join(filter(None, [
-            el.get("class", ""),
-            el.get("id", ""),
-            el.get("role", ""),
+            el.get("class") or "",
+            el.get("id") or "",
+            el.get("role") or "",
         ]))
-        if attrs and _JUNK_PATTERNS.search(attrs):
+        if not attrs:
+            continue
+        if _JUNK_PATTERNS.search(attrs) or _NAV_PATTERNS.search(attrs):
             if el.getparent() is not None:
                 el.getparent().remove(el)
 
     # Remove hidden elements
-    for el in doc.iter():
-        style = el.get("style", "")
-        if "display:none" in style.replace(" ", "") or "visibility:hidden" in style.replace(" ", ""):
+    for el in list(doc.iter()):
+        style = el.get("style") or ""
+        if "display:none" in style.replace(" ", "") or \
+           "visibility:hidden" in style.replace(" ", ""):
             if el.getparent() is not None:
                 el.getparent().remove(el)
 
-    # Remove images, figures (we only want text content)
-    for tag in ("img", "figure", "figcaption", "picture", "video", "audio", "source", "object", "embed"):
-        for el in doc.iter(tag):
+    # Remove media elements
+    for tag in ("img", "figure", "figcaption", "picture",
+                "video", "audio", "source", "object", "embed"):
+        for el in list(doc.iter(tag)):
             if el.getparent() is not None:
                 el.getparent().remove(el)
 
-    # --- Phase 2: Try trafilatura for content extraction ---
-    cleaned_html = tostring(doc, encoding="unicode", method="html")
-    markdown = None
+
+def _html_to_markdown(html: str) -> str:
+    """Convert HTML to structured markdown, stripping non-content."""
+    try:
+        doc = fromstring(html)
+    except Exception:
+        from lxml.html import document_fromstring
+        doc = document_fromstring(html)
+
+    # --- Phase 1: Strip junk from full document ---
+    _strip_junk(doc)
+
+    # --- Phase 2: Find the content root ---
+    content = _find_content_root(doc)
+    if content is None:
+        content = doc
+
+    # --- Phase 3: Process tables (flatten layout, preserve data) ---
+    table_replacements: List[tuple] = []
+
+    for table in list(content.iter("table")):
+        if _is_layout_table(table):
+            flat_text = _flatten_layout_table(table)
+            table_replacements.append((table, flat_text, "layout"))
+        else:
+            md_table = _data_table_to_markdown(table)
+            table_replacements.append((table, md_table, "data"))
+
+    for table, replacement, kind in table_replacements:
+        parent = table.getparent()
+        if parent is None:
+            continue
+        new_div = etree.Element("div")
+        for para in replacement.split("\n\n"):
+            p = etree.SubElement(new_div, "p")
+            p.text = para
+        parent.replace(table, new_div)
+
+    # --- Phase 4: Convert to markdown ---
+    content_html = tostring(content, encoding="unicode", method="html")
 
     try:
-        import trafilatura
-        extracted = trafilatura.extract(
-            cleaned_html,
-            include_tables=True,
-            include_links=False,
-            include_images=False,
-            include_comments=False,
-            output_format="txt",
-            favor_precision=False,
-            favor_recall=True,
-        )
-        if extracted and len(extracted.strip()) > 100:
-            markdown = extracted
-    except Exception as e:
-        log.warning(f"trafilatura extraction failed, falling back to markdownify: {e}")
-
-    # --- Phase 3: Fallback to markdownify ---
-    if not markdown:
-        try:
-            from markdownify import markdownify as md
-            markdown = md(
-                cleaned_html,
-                heading_style="ATX",
-                bullets="-",
-                strip=["a"],
-                convert=["h1", "h2", "h3", "h4", "h5", "h6",
-                         "p", "br", "li", "ul", "ol",
-                         "table", "thead", "tbody", "tr", "th", "td",
-                         "blockquote", "pre", "code",
-                         "strong", "em", "b", "i",
-                         "dl", "dt", "dd", "hr"],
-            )
-        except ImportError:
-            raise RuntimeError("markdownify is required — pip install markdownify")
+        from markdownify import markdownify as md
+        markdown = md(
+            content_html,
+            heading_style="ATX",
+            bullets="-",
+            strip=["a", "img", "figure", "figcaption",
+                   "picture", "video", "audio", "source",
+                   "object", "embed", "iframe"],
+        ) or ""
+    except ImportError:
+        raise RuntimeError("markdownify is required — pip install markdownify")
 
     if not markdown:
         return ""
 
-    # --- Phase 4: Clean up ---
     return _clean_markdown(markdown)
 
 
 def _clean_markdown(text: str) -> str:
     """Normalize whitespace and remove artifacts from converted markdown."""
-    # Normalize line endings
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
     # Collapse runs of 3+ blank lines to 2
     text = re.sub(r"\n{3,}", "\n\n", text)
 
-    # Remove lines that are only whitespace or dashes/underscores (decorative)
     lines = text.split("\n")
     cleaned = []
     for line in lines:
@@ -185,11 +346,11 @@ def _clean_markdown(text: str) -> str:
 
     text = "\n".join(cleaned)
 
-    # Normalize multiple spaces within lines (but preserve leading whitespace for code)
+    # Normalize multiple spaces within lines (preserve code indentation)
     out_lines = []
     for line in text.split("\n"):
         if line.startswith("    ") or line.startswith("\t"):
-            out_lines.append(line)  # preserve code blocks
+            out_lines.append(line)
         else:
             out_lines.append(re.sub(r"  +", " ", line).rstrip())
 

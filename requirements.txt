@@ -10,5 +10,4 @@ numpy
 python-doctr[torch]
 torch
 img2table
-trafilatura>=1.8.0
 markdownify>=0.13.0
