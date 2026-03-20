@@ -57,14 +57,24 @@ async def text_extract(
             detail=f"Unknown scheme: {scheme}. Available: {list(schemes.keys())}",
         )
 
-    # Extract text from each file
+    # Check if scheme wants raw bytes instead of extracted text
+    raw_input = False
+    if scheme != "raw":
+        scheme_mod_check = get_scheme(scheme)
+        if scheme_mod_check and getattr(scheme_mod_check, "RAW_INPUT", False):
+            raw_input = True
+
+    # Extract text (or collect raw bytes) from each file
     extracted = {}
     errors = []
     for f in files:
         try:
             content = await f.read()
-            text = extract_text_from_bytes(content, f.filename)
-            extracted[f.filename] = text
+            if raw_input:
+                extracted[f.filename] = content
+            else:
+                text = extract_text_from_bytes(content, f.filename)
+                extracted[f.filename] = text
         except Exception as e:
             errors.append({"filename": f.filename, "error": str(e)})
 
