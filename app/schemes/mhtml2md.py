@@ -151,9 +151,13 @@ def _extract_head_metadata(html: str, meta: Dict[str, str]) -> Dict[str, str]:
 # Elements that never contain primary content
 _STRIP_TAGS = {
     "script", "style", "noscript", "iframe", "svg", "object", "embed",
-    "video", "audio", "canvas", "map", "form", "input", "select",
+    "video", "audio", "canvas", "map", "input", "select",
     "textarea", "button",
 }
+
+# Tags to unwrap (keep children, remove the tag itself)
+# ASP.NET wraps entire pages in <form>; stripping it would kill all content
+_UNWRAP_TAGS = {"form"}
 
 # Semantic HTML5 elements that are navigation/chrome, not content
 _STRIP_SEMANTIC = {"nav", "footer", "aside", "header"}
@@ -164,6 +168,12 @@ _NOISE_PATTERNS = [
     "social-share", "share-buttons", "related-posts", "advertisement",
     "ad-wrapper", "sticky-header", "sticky-footer", "popup", "modal",
     "banner", "toast", "notification", "skip-nav", "back-to-top",
+    # Government portal chrome
+    "announcement", "search-dropdown", "radio-container", "search-source",
+    "printer", "print-preview", "icon_printer", "icon_ask_question",
+    "linkAskQuestion", "webchat", "footerContainer", "return-to-top",
+    "navbar-header", "nav-group", "headerTitle", "rss-feed",
+    "aspNetHidden",
 ]
 
 _NOISE_RE = re.compile("|".join(_NOISE_PATTERNS), re.IGNORECASE)
@@ -219,6 +229,12 @@ def _strip_noise(doc: etree._Element) -> etree._Element:
                     parent.text = (parent.text or "") + el.tail
             parent.remove(el)
 
+    # Unwrap tags that should be removed but whose children should be kept
+    # (e.g. ASP.NET <form> wrapping the whole page)
+    for tag_name in _UNWRAP_TAGS:
+        for el in list(doc.iter(tag_name)):
+            el.drop_tag()
+
     # Strip HTML comments
     for comment in doc.iter(etree.Comment):
         parent = comment.getparent()
@@ -235,8 +251,67 @@ def _strip_noise(doc: etree._Element) -> etree._Element:
 
 
 # ---------------------------------------------------------------------------
-# Stage 3: Layout table unwrapping
+# Stage 2.5: Content root refinement
 # ---------------------------------------------------------------------------
+# Known CMS content wrapper class fragments (case-insensitive)
+_CONTENT_CLASSES = [
+    "content-wrapper", "theme-content", "article-content", "post-content",
+    "entry-content", "main-content", "page-content", "content-body",
+    "content-area", "content-main", "rich-text", "field-body",
+]
+
+_CONTENT_CLASS_RE = re.compile("|".join(_CONTENT_CLASSES), re.IGNORECASE)
+
+
+def _find_content_root(doc: etree._Element) -> etree._Element:
+    """Narrow the tree to the densest content region.
+
+    Strategy:
+    1. Check for known CMS content wrapper classes.
+    2. Failing that, find the deepest element that still holds >60% of all text.
+       This naturally skips thin chrome wrappers and finds the actual content.
+    """
+    total_text_len = len((doc.text_content() or "").strip())
+    if total_text_len < 100:
+        return doc
+
+    # Strategy 1: known content wrapper classes
+    for el in doc.iter():
+        if not isinstance(el.tag, str):
+            continue
+        cls = el.get("class", "")
+        if cls and _CONTENT_CLASS_RE.search(cls):
+            el_len = len((el.text_content() or "").strip())
+            if el_len > total_text_len * 0.4:
+                return el
+
+    # Strategy 2: find deepest element holding >60% of text
+    # Never select table cells, table rows, or list items as content root
+    _SKIP_ROOT_TAGS = {"td", "th", "tr", "li", "thead", "tbody", "tfoot"}
+    best = doc
+    best_depth = 0
+
+    def _walk(el, depth):
+        nonlocal best, best_depth
+        if not isinstance(el.tag, str):
+            return
+        tag = el.tag.lower()
+        el_len = len((el.text_content() or "").strip())
+        # Must hold substantial portion of total text
+        if el_len > total_text_len * 0.6:
+            # Prefer deeper elements (more specific content region)
+            if depth > best_depth and tag not in _SKIP_ROOT_TAGS:
+                best = el
+                best_depth = depth
+            # Keep going deeper
+            for child in el:
+                _walk(child, depth + 1)
+
+    _walk(doc, 0)
+
+    return best
+
+
 def _is_layout_table(table: etree._Element) -> bool:
     """Heuristic: return True if a <table> is used for layout, not data."""
     # If it has role="presentation" or role="none", it's definitively layout
@@ -245,7 +320,6 @@ def _is_layout_table(table: etree._Element) -> bool:
         return True
 
     # If this table's own rows (not nested tables') have <th>, it's data
-    # Check direct tr children and tr inside thead/tbody
     for row in table.findall("./tr") + table.findall("./thead/tr") + table.findall("./tbody/tr"):
         if row.findall("th"):
             return False
@@ -255,11 +329,30 @@ def _is_layout_table(table: etree._Element) -> bool:
     if not rows:
         return True  # empty table, unwrap
 
-    # Count columns across rows
+    # Count columns, empty cells, and cells with block content
     col_counts = []
+    empty_cells = 0
+    total_cells = 0
+    cells_with_blocks = 0
+    total_text_len = 0
+    block_tags = {
+        "p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
+        "ul", "ol", "table", "blockquote", "article", "section",
+    }
+
     for row in rows:
         cells = row.findall("td") + row.findall("th")
         col_counts.append(len(cells))
+        for cell in cells:
+            total_cells += 1
+            text = (cell.text_content() or "").strip()
+            if not text or text == "\xa0":
+                empty_cells += 1
+            total_text_len += len(text)
+            for child in cell:
+                if isinstance(child.tag, str) and child.tag.lower() in block_tags:
+                    cells_with_blocks += 1
+                    break
 
     if not col_counts:
         return True
@@ -270,32 +363,22 @@ def _is_layout_table(table: etree._Element) -> bool:
     if avg_cols < 1.5:
         return True
 
-    # Check if any cell contains block-level elements (layout signal)
-    block_tags = {
-        "p", "div", "h1", "h2", "h3", "h4", "h5", "h6",
-        "ul", "ol", "table", "blockquote", "article", "section",
-    }
-    cells_with_blocks = 0
-    total_cells = 0
-    for row in rows:
-        for cell in row.findall("td"):
-            total_cells += 1
-            for child in cell:
-                if isinstance(child.tag, str) and child.tag.lower() in block_tags:
-                    cells_with_blocks += 1
-                    break
+    # High empty cell ratio: tables used for layout/spacing have many
+    # empty cells (e.g. indentation columns, spacer rows)
+    if total_cells > 4:
+        empty_ratio = empty_cells / total_cells
+        if empty_ratio > 0.4:
+            return True
+
+    # border="0" with many rows and no th → strong layout signal
+    border = table.get("border", "")
+    if border == "0" and len(rows) > 5:
+        return True
 
     # If >40% of cells contain block elements with few columns, likely layout
     if total_cells > 0 and avg_cols <= 3:
         if cells_with_blocks / total_cells > 0.4:
             return True
-
-    # Large text content in cells relative to structure suggests layout
-    total_text_len = 0
-    for row in rows:
-        for cell in row.findall("td"):
-            text = cell.text_content() or ""
-            total_text_len += len(text)
 
     # If average cell text is very long, it's likely prose in a layout table
     if total_cells > 0 and total_text_len / total_cells > 200:
@@ -305,8 +388,12 @@ def _is_layout_table(table: etree._Element) -> bool:
 
 
 def _unwrap_layout_tables(doc: etree._Element) -> etree._Element:
-    """Replace layout tables with their cell contents in reading order."""
-    # Process innermost tables first (iterate until no more layout tables)
+    """Replace layout tables with their cell contents in reading order.
+
+    Smart merging: if a row has a short 'numbering' cell followed by a
+    content cell, they are merged into a single paragraph.  Spacer rows
+    (all empty cells) are dropped.
+    """
     max_passes = 10
     for _ in range(max_passes):
         layout_tables = [
@@ -320,25 +407,89 @@ def _unwrap_layout_tables(doc: etree._Element) -> etree._Element:
             if parent is None:
                 continue
 
-            # Create a container div with the cells' contents in order
-            # Only process direct rows (not rows inside nested data tables)
             container = etree.Element("div")
             direct_rows = (table.findall("./tr") + table.findall("./thead/tr")
                            + table.findall("./tbody/tr"))
+
             for row in direct_rows:
-                for cell in list(row.findall("td")) + list(row.findall("th")):
-                    # Move cell children into container
+                cells = list(row.findall("td")) + list(row.findall("th"))
+
+                # Collect non-empty cells
+                cell_data = []
+                for cell in cells:
+                    text = (cell.text_content() or "").strip()
+                    if text and text != "\xa0":
+                        cell_data.append((cell, text))
+
+                if not cell_data:
+                    continue  # skip spacer rows
+
+                # Single non-empty cell: output its children directly
+                if len(cell_data) == 1:
+                    cell = cell_data[0][0]
                     wrapper = etree.SubElement(container, "div")
                     if cell.text and cell.text.strip():
                         wrapper.text = cell.text
-                    for child in cell:
+                    for child in list(cell):
                         wrapper.append(child)
+                    continue
 
-            # Preserve tail text
+                # Multiple non-empty cells: check for numbering pattern
+                first_text = cell_data[0][1]
+                is_numbering = (
+                    len(first_text) <= 10
+                    and bool(re.match(
+                        r"^(\d+\.?\d*\.?|[a-zA-Z][.)]\s*|[ivxIVX]+[.)]\s*)$",
+                        first_text.strip()
+                    ))
+                )
+
+                if is_numbering and len(cell_data) >= 2:
+                    # Merge: prefix with number, then content from remaining cells
+                    wrapper = etree.SubElement(container, "div")
+                    prefix = first_text.strip()
+                    if not prefix.endswith(".") and not prefix.endswith(")"):
+                        prefix += "."
+                    prefix += " "
+
+                    # Get content from second cell (the main content cell)
+                    main_cell = cell_data[1][0]
+                    has_children = len(list(main_cell)) > 0
+
+                    if has_children:
+                        # Put prefix text, then move children
+                        wrapper.text = prefix + (main_cell.text or "").lstrip()
+                        for child in list(main_cell):
+                            wrapper.append(child)
+                    else:
+                        wrapper.text = prefix + cell_data[1][1]
+
+                    # Append any additional cells' content
+                    for cell, text in cell_data[2:]:
+                        extra = etree.SubElement(container, "div")
+                        if list(cell):
+                            if cell.text and cell.text.strip():
+                                extra.text = cell.text
+                            for child in list(cell):
+                                extra.append(child)
+                        else:
+                            extra.text = text
+                else:
+                    # Not a numbering row: output each cell as separate block
+                    for cell, text in cell_data:
+                        wrapper = etree.SubElement(container, "div")
+                        if list(cell):
+                            if cell.text and cell.text.strip():
+                                wrapper.text = cell.text
+                            for child in list(cell):
+                                wrapper.append(child)
+                        else:
+                            wrapper.text = text
+
             container.tail = table.tail
-
-            # Replace table with container
             parent.replace(table, container)
+
+    return doc
 
     return doc
 
@@ -383,6 +534,36 @@ def _is_bold(el: etree._Element) -> bool:
         return True
     style = el.get("style", "")
     return bool(_FONT_WEIGHT_RE.search(style))
+
+
+def _has_only_bold_content(el: etree._Element) -> bool:
+    """Check if element's entire text content comes from bold descendants.
+
+    Returns True for patterns like:
+        <div><span><strong><u>Heading</u></strong></span></div>
+        <div><b>Heading</b></div>
+        <div><strong>Heading Text</strong></div>
+    """
+    text = (el.text_content() or "").strip()
+    if not text:
+        return False
+
+    # Check if element itself has direct text that's not inside bold tags
+    if el.text and el.text.strip():
+        # The element has direct text — not purely from bold children
+        return False
+
+    # Walk to find if all text lives inside <strong>/<b> descendants
+    bold_text_len = 0
+    for desc in el.iter():
+        if not isinstance(desc.tag, str):
+            continue
+        tag = desc.tag.lower()
+        if tag in ("strong", "b"):
+            bold_text_len += len((desc.text_content() or "").strip())
+
+    # All text should be inside bold tags (with tolerance for whitespace)
+    return bold_text_len >= len(text) * 0.8
 
 
 def _get_text_length(el: etree._Element) -> int:
@@ -457,9 +638,11 @@ def _infer_semantics(doc: etree._Element) -> etree._Element:
     size_map = _build_size_to_heading_map(sizes)
 
     # Also detect bold-only headings (bold + block + short text, no font-size)
-    # These get a lower priority heading level.
+    # When no size hierarchy exists, these are the primary structural cues
+    # so they should be h2 (reserving h1 for explicit page titles).
+    # When size headings exist, bold-only headings sit one level below.
     max_inferred = max((int(h[1]) for h in size_map.values()), default=0)
-    bold_heading_level = min(max_inferred + 1, 5) if max_inferred else 3
+    bold_heading_level = min(max_inferred + 1, 5) if max_inferred else 2
 
     promotions = []
 
@@ -492,14 +675,30 @@ def _infer_semantics(doc: etree._Element) -> etree._Element:
 
         # Bold + block-like + short text → heading (conservative)
         if _is_bold(el) and _is_block_like(el) and len(text) < 100:
-            # Extra check: skip if it's inside a paragraph with more content
+            # Skip if it's a bold fragment INSIDE a paragraph (inline emphasis)
+            # But allow standalone block divs inside larger containers
             parent = el.getparent()
             if parent is not None:
                 parent_tag = (parent.tag if isinstance(parent.tag, str) else "").lower()
-                parent_text_len = _get_text_length(parent)
-                # If parent has much more text, this bold bit is emphasis, not heading
-                if parent_tag in ("p", "div") and parent_text_len > len(text) * 2:
-                    continue
+                # Only skip if parent is a paragraph-like element (inline context)
+                # where this bold text is just emphasis within running prose
+                if parent_tag == "p":
+                    parent_text_len = _get_text_length(parent)
+                    if parent_text_len > len(text) * 2:
+                        continue
+            promotions.append((el, f"h{bold_heading_level}"))
+            continue
+
+        # Block element whose entire content is bold (possibly via descendants)
+        # Common in gov sites: <div><span><strong><u>Heading</u></strong></span></div>
+        if _is_block_like(el) and len(text) < 100 and _has_only_bold_content(el):
+            parent = el.getparent()
+            if parent is not None:
+                parent_tag = (parent.tag if isinstance(parent.tag, str) else "").lower()
+                if parent_tag == "p":
+                    parent_text_len = _get_text_length(parent)
+                    if parent_text_len > len(text) * 2:
+                        continue
             promotions.append((el, f"h{bold_heading_level}"))
 
     # Apply promotions
@@ -509,6 +708,11 @@ def _infer_semantics(doc: etree._Element) -> etree._Element:
         for attr in ("style", "class", "align"):
             if attr in el.attrib:
                 del el.attrib[attr]
+        # Strip redundant formatting tags inside headings
+        # (bold, underline, italic are implied by heading level)
+        for fmt_tag in ("strong", "b", "u", "em", "i", "span", "font"):
+            for fmt_el in list(el.iter(fmt_tag)):
+                fmt_el.drop_tag()
 
     # --- <br><br> to paragraph breaks ---
     _convert_br_sequences(doc)
@@ -720,7 +924,73 @@ def _html_to_markdown(doc: etree._Element) -> str:
     # Post-processing
     result = _postprocess_markdown(result)
 
+    # Apply hierarchical indentation based on numbering patterns
+    result = _apply_hierarchical_indent(result)
+
     return result
+
+
+# Numbering patterns → indent level (order matters: most specific first)
+_INDENT_PATTERNS = [
+    # Level 1: sub-numbering like 2.1, 10.3
+    (re.compile(r"^\d+\.\d+\.?\s"), 1),
+    # Level 2: letter sub-points like a), b)
+    (re.compile(r"^[a-hj-uw-z]\)\s"), 2),
+    # Level 3: roman numeral sub-points like i), ii), iv), vi)
+    (re.compile(r"^[ivxlc]+\)\s"), 3),
+    # Level 0: top-level numbering like 1., 2., 10.
+    (re.compile(r"^\d+\.\s"), 0),
+]
+
+_INDENT_UNIT = "   "  # 3 spaces per level
+
+
+def _apply_hierarchical_indent(text: str) -> str:
+    """Add indentation to numbered paragraphs based on their numbering pattern.
+
+    Detects hierarchical numbering (1. / 2.1 / a) / i)) and indents
+    accordingly so that the document structure is visually clear for
+    LLM consumption.
+    """
+    blocks = text.split("\n\n")
+    result_blocks = []
+
+    for block in blocks:
+        if not block.strip():
+            result_blocks.append(block)
+            continue
+
+        # Skip blocks that are markdown structural elements
+        first_line = block.lstrip()
+        if (first_line.startswith("#")       # heading
+            or first_line.startswith("|")     # table
+            or first_line.startswith("---")   # HR / frontmatter
+            or first_line.startswith("```")   # code fence
+            or first_line.startswith("> ")):  # blockquote
+            result_blocks.append(block)
+            continue
+
+        # Detect numbering level
+        level = None
+        for pattern, lvl in _INDENT_PATTERNS:
+            if pattern.match(first_line):
+                level = lvl
+                break
+
+        if level is not None and level > 0:
+            indent = _INDENT_UNIT * level
+            # Indent all lines of the block
+            indented_lines = []
+            for line in block.split("\n"):
+                if line.strip():
+                    indented_lines.append(indent + line)
+                else:
+                    indented_lines.append(line)
+            result_blocks.append("\n".join(indented_lines))
+        else:
+            result_blocks.append(block)
+
+    return "\n\n".join(result_blocks)
 
 
 def _postprocess_markdown(text: str) -> str:
@@ -828,8 +1098,14 @@ def _convert_single(content: bytes, filename: str) -> Tuple[str, Dict[str, str]]
     # Stage 2: Noise removal
     doc = _strip_noise(doc)
 
-    # Stage 3: Layout table unwrapping
+    # Stage 3: Layout table unwrapping (must happen before content root
+    # detection, otherwise the finder may select a <td> inside a layout table)
     doc = _unwrap_layout_tables(doc)
+
+    # Stage 3.5: Content root refinement
+    # After stripping noise and unwrapping layout, narrow to the densest
+    # content region.  Handles CMS pages where content is buried deep.
+    doc = _find_content_root(doc)
 
     # Stage 4: Semantic inference
     doc = _infer_semantics(doc)
