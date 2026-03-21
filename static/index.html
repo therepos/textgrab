@@ -779,7 +779,7 @@
     updateVisionBadge();
   }
 
-  // Auto-save own API key on blur
+  // Auto-save own API key on blur and input
   document.getElementById('vi-api-key').addEventListener('blur', function() {
     const key = this.value.trim();
     if (key) {
@@ -789,6 +789,13 @@
     } else {
       localStorage.removeItem('tg_api_key');
       document.getElementById('vs-key').textContent = '';
+    }
+    updateVisionBadge();
+  });
+  document.getElementById('vi-api-key').addEventListener('input', function() {
+    const key = this.value.trim();
+    if (key) {
+      localStorage.setItem('tg_api_key', key);
     }
     updateVisionBadge();
   });

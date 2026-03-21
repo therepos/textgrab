@@ -145,13 +145,17 @@ async def text_extract(
         resolved_key = ""
         if api_key:
             resolved_key = api_key
+            log.warning(f"Vision: using user-supplied API key ({api_key[:8]}...)")
         elif access_code:
             server_code = os.environ.get("VISION_ACCESS_CODE", "")
             server_key = os.environ.get("ANTHROPIC_API_KEY", "")
             if server_code and access_code == server_code and server_key:
                 resolved_key = server_key
+                log.warning("Vision: using server API key via access code")
             elif server_code and access_code != server_code:
                 raise HTTPException(status_code=403, detail="Invalid access code")
+        else:
+            log.warning("Vision: no API key provided, OCR fallback")
 
         # Pass api_key to schemes that support it (e.g. mhtml2md for vision API)
         try:

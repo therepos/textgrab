@@ -939,11 +939,14 @@ def _describe_images(
     if not api_key:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
+    logger.warning(f"[VISION] api_key={'set' if api_key else 'empty'}, images={len(images)} MHTML parts")
+
     img_elements = list(doc.findall(".//img"))
     if not img_elements:
+        logger.warning(f"[VISION] No <img> tags found in content. Images dict has {len(images)} MHTML parts.")
         return doc
 
-    logger.info(f"Found {len(img_elements)} <img> tags in content")
+    logger.warning(f"[VISION] Found {len(img_elements)} <img> tags, {len(images)} MHTML image parts")
 
     for img in img_elements:
         src = img.get("src", "")
@@ -967,11 +970,10 @@ def _describe_images(
             _remove_element_preserve_tail(img)
             continue
         if len(image_data) < _MIN_IMAGE_SIZE:
-            logger.debug(f"Skipping small image ({len(image_data)}B): {src[:60]}")
             _remove_element_preserve_tail(img)
             continue
 
-        logger.info(f"Describing image ({len(image_data)}B, {media_type}): {src[:60]}")
+        logger.warning(f"[VISION] Describing image ({len(image_data)}B, {media_type}): {src[:80]}")
 
         # Attempt vision API description
         description = None
