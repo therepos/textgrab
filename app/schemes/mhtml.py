@@ -101,9 +101,9 @@ def _find_content_root(doc):
             if len(el.text_content().strip()) > 200:
                 return el
 
-    # Try content-hint class/id
-    best = None
-    best_len = 0
+    # Try content-hint class/id — prefer the SMALLEST (most specific)
+    # match to avoid picking up a parent that also includes nav chrome
+    candidates = []
     for el in doc.iter("div", "section"):
         attrs = " ".join(filter(None, [
             el.get("class") or "",
@@ -111,14 +111,17 @@ def _find_content_root(doc):
         ]))
         if attrs and _CONTENT_HINTS.search(attrs):
             text_len = len(el.text_content().strip())
-            if text_len > best_len:
-                best = el
-                best_len = text_len
+            if text_len > 200:
+                candidates.append((text_len, el))
 
-    if best is not None and best_len > 200:
-        return best
+    if candidates:
+        # Sort ascending by text length — smallest content div first
+        candidates.sort(key=lambda x: x[0])
+        return candidates[0][1]
 
     # Fallback: largest text-bearing div
+    best = None
+    best_len = 0
     for el in doc.iter("div"):
         text_len = len(el.text_content().strip())
         if text_len > best_len:
@@ -178,8 +181,8 @@ def _is_layout_table(table) -> bool:
 def _flatten_layout_table(table) -> str:
     """Convert a layout table into structured paragraphs.
 
-    Recognises numbered paragraphs (1., 2.1, a), i), etc.)
-    and joins cell contents appropriately.
+    Detects document headings from bold/underline formatting in full-width
+    cells, and numbered paragraphs (1., 2.1, a), i), etc.).
     """
     parts: List[str] = []
     _NUM_RE = re.compile(r'^(\d+\.|\d+\.\d+|[a-z]\)|[ivx]+\))$')
@@ -195,14 +198,50 @@ def _flatten_layout_table(table) -> str:
         if not cell_texts:
             continue
 
+        # --- Heading detection ---
+        # Check if this row is a single full-width cell with bold/underline
+        # (common CMS pattern for section headings in layout tables)
+        if len(cell_texts) == 1:
+            cell = cells[0] if cells else None
+            if cell is not None:
+                cs = int(cell.get("colspan") or "1")
+                t = cell_texts[0]
+                has_bold = any(c.tag in ("strong", "b") for c in cell.iter())
+                has_underline = any(c.tag == "u" for c in cell.iter())
+                is_short = len(t) < 80
+
+                if is_short and has_bold and cs >= 4:
+                    if has_underline:
+                        # Bold + underline = top-level heading
+                        parts.append(f"## {t}")
+                    else:
+                        # Bold only = sub-heading
+                        parts.append(f"### {t}")
+                    continue
+
+            # Not a heading, just a standalone paragraph
+            parts.append(cell_texts[0])
+            continue
+
         first = cell_texts[0]
 
         if len(cell_texts) >= 2 and _NUM_RE.match(first):
-            # Numbered paragraph: "2.1" + "paragraph body..."
-            parts.append(f"{first} {' '.join(cell_texts[1:])}")
-        elif len(cell_texts) == 1:
-            # Full-width cell = heading or standalone paragraph
-            parts.append(first)
+            # Check if this is a numbered heading (e.g. "1." + "Scope")
+            # Heading pattern: number cell + bold short text in large colspan
+            second_cell = cells[1] if len(cells) > 1 else None
+            body = " ".join(cell_texts[1:])
+            is_heading = False
+
+            if second_cell is not None and len(body) < 80:
+                sc_bold = any(c.tag in ("strong", "b") for c in second_cell.iter())
+                sc_cs = int(second_cell.get("colspan") or "1")
+                if sc_bold and sc_cs >= 4:
+                    is_heading = True
+
+            if is_heading:
+                parts.append(f"### {first} {body}")
+            else:
+                parts.append(f"{first} {body}")
         else:
             parts.append(" ".join(cell_texts))
 
