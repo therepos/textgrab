@@ -8,9 +8,9 @@ services:
       - /mnt/sec/apps/textgrab/data:/data/models
     environment:
       # optional: server-side vision API key
-      - ANTHROPIC_API_KEY=   
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY} 
       # optional: passphrase to gate server key usage     
-      - VISION_ACCESS_CODE=       
+      - VISION_ACCESS_CODE=${VISION_ACCESS_CODE}    
     restart: unless-stopped
     security_opt:
       - apparmor=unconfined
