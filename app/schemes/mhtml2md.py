@@ -909,10 +909,11 @@ def _describe_images(
     doc: etree._Element,
     images: Dict[str, Tuple[str, bytes]],
 ) -> etree._Element:
-    """Replace <img> elements with OCR text descriptions or placeholders.
+    """Replace <img> elements with placeholders or remove them.
 
-    For each significant image (>5KB), attempts OCR text extraction.
-    Images below the size threshold (icons, UI chrome) are simply removed.
+    Significant images (>5KB) get a clear placeholder so the reader knows
+    a figure existed at that point.  Small images (icons, UI chrome) are
+    silently removed.
     """
     img_elements = list(doc.findall(".//img"))
     if not img_elements:
@@ -927,71 +928,32 @@ def _describe_images(
 
         # Match src to MHTML image parts
         image_data = None
-        media_type = None
         for loc, (mt, data) in images.items():
             if src.startswith(loc) or loc.startswith(src) or _urls_match(src, loc):
                 image_data = data
-                media_type = mt
                 break
 
         # No matching image part, or too small (icon/UI element) — remove
-        if image_data is None:
-            _remove_element_preserve_tail(img)
-            continue
-        if len(image_data) < _MIN_IMAGE_SIZE:
+        if image_data is None or len(image_data) < _MIN_IMAGE_SIZE:
             _remove_element_preserve_tail(img)
             continue
 
-        # OCR text extraction
-        description = _describe_with_ocr(image_data)
-
-        # Replace <img> with description block
-        desc_block = etree.Element("div")
+        # Replace with placeholder
         label = alt.strip() if alt.strip() else "Figure"
-        label_el = etree.SubElement(desc_block, "strong")
-        label_el.text = f"[{label}]"
-        label_el.tail = "\n"
-        desc_p = etree.SubElement(desc_block, "p")
-        desc_p.text = description
-
-        desc_block.tail = img.tail
-        parent.replace(img, desc_block)
+        placeholder = etree.Element("p")
+        placeholder.text = f"[{label} — not converted]"
+        placeholder.tail = img.tail
+        parent.replace(img, placeholder)
 
     return doc
 
 
 def _urls_match(url1: str, url2: str) -> bool:
     """Fuzzy URL matching for MHTML Content-Location vs img src."""
-    # Strip query params and fragments for comparison
     def _core(u):
         u = u.split("?")[0].split("#")[0]
         return u.rstrip("/").lower()
     return _core(url1) == _core(url2)
-
-
-
-def _describe_with_ocr(image_data: bytes) -> str:
-    """Fallback: extract text labels from image via OCR."""
-    import tempfile
-    import os
-
-    try:
-        from PIL import Image
-        import io
-
-        img = Image.open(io.BytesIO(image_data))
-
-        # Use doctr if available (already in the project's deps)
-        from ..extracttext import _preprocess_image, _ocr_with_doctr
-        preprocessed = _preprocess_image(img)
-        ocr_text = _ocr_with_doctr([preprocessed]).strip()
-
-        if ocr_text:
-            return f"[OCR extracted text — diagram structure not captured]\n{ocr_text}"
-    except Exception as e:
-        logger.warning(f"OCR fallback failed: {e}")
-
-    return "[Figure: image could not be described]"
 
 
 def _remove_element_preserve_tail(el):
