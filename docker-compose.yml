@@ -6,10 +6,6 @@ services:
       - "3020:8000"
     volumes:
       - /mnt/sec/apps/textgrab/data:/data/models
-    environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - VISION_ACCESS_CODE=${VISION_ACCESS_CODE}
-      - VISION_MODEL=${VISION_MODEL:-claude-sonnet-4-6}
     restart: unless-stopped
     security_opt:
       - apparmor=unconfined

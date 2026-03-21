@@ -14,11 +14,9 @@ Pipeline stages:
 """
 
 import email
-import os
 import re
 import logging
-from typing import Dict, List, Tuple, Any, Optional
-from datetime import datetime
+from typing import Dict, List, Tuple, Optional
 
 from lxml import etree
 from lxml.html import tostring as html_tostring, fromstring as html_fromstring
@@ -906,47 +904,19 @@ def _normalise_text(text: str) -> str:
 # ---------------------------------------------------------------------------
 _MIN_IMAGE_SIZE = 5000  # bytes — skip icons and UI chrome below this
 
-_VISION_PROMPT = """Describe this diagram/figure for a text document. Your description will replace the image in a markdown document used for research and review.
-
-Rules:
-- Describe the structure, relationships, and flow — not just labels.
-- For flowcharts: describe nodes, connections, conditions, and flow direction.
-- For framework/hierarchy diagrams: describe the groupings, levels, and relationships.
-- For tables rendered as images: recreate as a text table.
-- Use plain structured text. No markdown headings or bullet formatting.
-- Be concise but complete. Every piece of information in the diagram must be captured.
-- Start directly with the description — no preamble like "This diagram shows..."."""
-
 
 def _describe_images(
     doc: etree._Element,
     images: Dict[str, Tuple[str, bytes]],
-    api_key: str = "",
 ) -> etree._Element:
-    """Replace <img> elements with text descriptions from the vision API.
+    """Replace <img> elements with OCR text descriptions or placeholders.
 
-    For each significant image (>5KB), attempts to describe via Claude vision API.
-    Falls back to OCR text extraction if the API call fails.
+    For each significant image (>5KB), attempts OCR text extraction.
     Images below the size threshold (icons, UI chrome) are simply removed.
     """
-    import base64
-    import os
-    import json
-    from urllib.request import Request, urlopen
-    from urllib.error import URLError, HTTPError
-
-    # Use passed key; fall back to env var for backward compat (direct CLI use)
-    if not api_key:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-
-    logger.warning(f"[VISION] api_key={'set' if api_key else 'empty'}, images={len(images)} MHTML parts")
-
     img_elements = list(doc.findall(".//img"))
     if not img_elements:
-        logger.warning(f"[VISION] No <img> tags found in content. Images dict has {len(images)} MHTML parts.")
         return doc
-
-    logger.warning(f"[VISION] Found {len(img_elements)} <img> tags, {len(images)} MHTML image parts")
 
     for img in img_elements:
         src = img.get("src", "")
@@ -956,7 +926,6 @@ def _describe_images(
             continue
 
         # Match src to MHTML image parts
-        # MHTML Content-Location may be truncated vs the full src URL
         image_data = None
         media_type = None
         for loc, (mt, data) in images.items():
@@ -973,25 +942,15 @@ def _describe_images(
             _remove_element_preserve_tail(img)
             continue
 
-        logger.warning(f"[VISION] Describing image ({len(image_data)}B, {media_type}): {src[:80]}")
-
-        # Attempt vision API description
-        description = None
-        if api_key:
-            description = _describe_with_vision(image_data, media_type, api_key)
-
-        # Fallback: OCR
-        if description is None:
-            description = _describe_with_ocr(image_data)
+        # OCR text extraction
+        description = _describe_with_ocr(image_data)
 
         # Replace <img> with description block
         desc_block = etree.Element("div")
-        # Add figure label
         label = alt.strip() if alt.strip() else "Figure"
         label_el = etree.SubElement(desc_block, "strong")
         label_el.text = f"[{label}]"
         label_el.tail = "\n"
-        # Add description text
         desc_p = etree.SubElement(desc_block, "p")
         desc_p.text = description
 
@@ -1009,77 +968,6 @@ def _urls_match(url1: str, url2: str) -> bool:
         return u.rstrip("/").lower()
     return _core(url1) == _core(url2)
 
-
-def _describe_with_vision(
-    image_data: bytes, media_type: str, api_key: str
-) -> Optional[str]:
-    """Send image to Claude vision API and get a text description."""
-    import base64
-    import json
-    from urllib.request import Request, urlopen
-    from urllib.error import URLError, HTTPError
-
-    # Validate media type — Anthropic only accepts these
-    _SUPPORTED_MEDIA = {"image/png", "image/jpeg", "image/gif", "image/webp"}
-    if media_type not in _SUPPORTED_MEDIA:
-        logger.warning(f"Unsupported image media type: {media_type}, skipping vision")
-        return None
-
-    b64 = base64.b64encode(image_data).decode("ascii")
-
-    body = json.dumps({
-        "model": os.environ.get("VISION_MODEL", "claude-sonnet-4-6"),
-        "max_tokens": 1024,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": media_type,
-                        "data": b64,
-                    },
-                },
-                {"type": "text", "text": _VISION_PROMPT},
-            ],
-        }],
-    }).encode("utf-8")
-
-    req = Request(
-        "https://api.anthropic.com/v1/messages",
-        data=body,
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-        },
-        method="POST",
-    )
-
-    try:
-        with urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read())
-            text_parts = [
-                block["text"]
-                for block in result.get("content", [])
-                if block.get("type") == "text"
-            ]
-            description = "\n".join(text_parts).strip()
-            if description:
-                logger.info(f"Vision API described image ({len(image_data)}B)")
-                return description
-    except HTTPError as e:
-        # Read the error response body for better diagnostics
-        try:
-            err_body = e.read().decode("utf-8", errors="ignore")[:500]
-            logger.warning(f"Vision API {e.code}: {err_body}")
-        except Exception:
-            logger.warning(f"Vision API failed: {e}")
-    except (URLError, json.JSONDecodeError, KeyError) as e:
-        logger.warning(f"Vision API failed: {e}")
-
-    return None
 
 
 def _describe_with_ocr(image_data: bytes) -> str:
@@ -1234,8 +1122,8 @@ def _format_frontmatter(meta: Dict[str, str]) -> str:
 # ---------------------------------------------------------------------------
 # Full pipeline
 # ---------------------------------------------------------------------------
-def _convert_single(content: bytes, filename: str, api_key: str = "") -> Tuple[str, Dict[str, str]]:
-    """Run the full 6-stage pipeline on a single MHTML file.
+def _convert_single(content: bytes, filename: str) -> Tuple[str, Dict[str, str]]:
+    """Run the full conversion pipeline on a single MHTML file.
 
     Returns:
         (markdown_string, metadata_dict)
@@ -1285,7 +1173,7 @@ def _convert_single(content: bytes, filename: str, api_key: str = "") -> Tuple[s
     doc = _normalise(doc)
 
     # Stage 5.5: Image description — replace <img> with text descriptions
-    doc = _describe_images(doc, images, api_key=api_key)
+    doc = _describe_images(doc, images)
 
     # Stage 6: Markdown conversion
     markdown = _html_to_markdown(doc)
@@ -1296,13 +1184,12 @@ def _convert_single(content: bytes, filename: str, api_key: str = "") -> Tuple[s
 # ---------------------------------------------------------------------------
 # Scheme interface: transform()
 # ---------------------------------------------------------------------------
-def transform(texts: Dict[str, bytes], output_mode: str = "consolidated", api_key: str = "") -> dict:
+def transform(texts: Dict[str, bytes], output_mode: str = "consolidated") -> dict:
     """Transform MHTML bytes into structured markdown.
 
     Args:
         texts: {filename: raw_mhtml_bytes, ...}
         output_mode: "consolidated" or "individual"
-        api_key: Anthropic API key for vision-based image descriptions
 
     Returns:
         Scheme result dict.
@@ -1311,7 +1198,7 @@ def transform(texts: Dict[str, bytes], output_mode: str = "consolidated", api_ke
 
     for filename, content in sorted(texts.items()):
         try:
-            markdown, meta = _convert_single(content, filename, api_key=api_key)
+            markdown, meta = _convert_single(content, filename)
         except Exception as e:
             logger.error(f"Conversion failed for {filename}: {e}")
             markdown = f"*Conversion failed: {e}*"

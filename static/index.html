@@ -192,45 +192,7 @@
     font-size: 0.8rem; color: var(--text-dim); cursor: pointer; user-select: none;
   }
 
-  .vision-settings {
-    margin-top: 12px; font-size: 0.8rem;
-  }
-  .vision-toggle {
-    background: none; border: none; color: var(--text-dim); font-family: inherit;
-    font-size: 0.78rem; cursor: pointer; padding: 0; display: flex; align-items: center; gap: 5px;
-  }
-  .vision-toggle:hover { color: var(--accent); }
-  .vision-toggle .arrow { font-size: 0.65rem; transition: transform 0.2s; }
-  .vision-toggle .arrow.open { transform: rotate(90deg); }
-  .vision-body { display: none; margin-top: 10px; }
-  .vision-body.visible { display: block; }
-  .vision-option {
-    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
-  }
-  .vision-option input[type="radio"] { accent-color: var(--accent); cursor: pointer; }
-  .vision-option label { color: var(--text-dim); cursor: pointer; user-select: none; font-size: 0.8rem; }
-  .vision-field {
-    display: none; margin: 4px 0 10px 22px;
-  }
-  .vision-field.visible { display: flex; gap: 8px; align-items: center; }
-  .vision-field input {
-    background: var(--surface); border: 1px solid var(--border);
-    border-radius: 6px; color: var(--text);
-    font-family: 'IBM Plex Mono', monospace; font-size: 0.78rem;
-    padding: 6px 10px; flex: 1; min-width: 0;
-  }
-  .vision-field input:focus { outline: none; border-color: var(--accent); }
-  .vision-field .v-status {
-    font-size: 0.75rem; white-space: nowrap;
-  }
-  .vision-field .v-status.ok { color: var(--green); }
-  .vision-field .v-status.fail { color: var(--red); }
-  .vision-field button {
-    background: var(--surface); border: 1px solid var(--border);
-    color: var(--text-dim); font-family: inherit; font-size: 0.75rem;
-    padding: 5px 12px; border-radius: 6px; cursor: pointer; white-space: nowrap;
-  }
-  .vision-field button:hover { color: var(--text); border-color: var(--accent); }
+
 </style>
 </head>
 <body>
@@ -272,36 +234,6 @@
     </div>
     <button class="submit-btn" id="btn-text" disabled onclick="doText()">Extract</button>
 
-    <div class="vision-settings" id="vision-settings">
-      <button class="vision-toggle" onclick="toggleVision()">
-        <span class="arrow" id="vision-arrow">▶</span>
-        <span>Vision API</span>
-        <span id="vision-badge" style="font-size:0.7rem;color:var(--text-dim)"></span>
-      </button>
-      <div class="vision-body" id="vision-body">
-        <div class="vision-option">
-          <input type="radio" name="vision-mode" id="vm-none" value="none" checked onchange="onVisionModeChange()">
-          <label for="vm-none">Off — OCR fallback for diagrams</label>
-        </div>
-        <div class="vision-option">
-          <input type="radio" name="vision-mode" id="vm-server" value="server" onchange="onVisionModeChange()">
-          <label for="vm-server">Server key — use access code</label>
-        </div>
-        <div class="vision-field" id="vf-server">
-          <input type="password" id="vi-access-code" placeholder="Access code" autocomplete="off">
-          <button onclick="verifyAccess()">Verify</button>
-          <span class="v-status" id="vs-access"></span>
-        </div>
-        <div class="vision-option">
-          <input type="radio" name="vision-mode" id="vm-own" value="own" onchange="onVisionModeChange()">
-          <label for="vm-own">Own key — use your Anthropic API key</label>
-        </div>
-        <div class="vision-field" id="vf-own">
-          <input type="password" id="vi-api-key" placeholder="sk-ant-..." autocomplete="off">
-          <span class="v-status" id="vs-key"></span>
-        </div>
-      </div>
-    </div>
     <div class="progress" id="prog-text">
       <div class="progress-bar"><div class="progress-bar-fill"></div></div>
       <div class="progress-text">Extracting…</div>
@@ -457,16 +389,6 @@
       for (const f of files) form.append('files', f);
       form.append('scheme', scheme);
       form.append('output_mode', outputMode);
-
-      // Append vision API credentials if configured
-      const visionMode = getVisionMode();
-      if (visionMode === 'server') {
-        const code = localStorage.getItem('tg_access_code') || '';
-        if (code) form.append('access_code', code);
-      } else if (visionMode === 'own') {
-        const key = localStorage.getItem('tg_api_key') || '';
-        if (key) form.append('api_key', key);
-      }
 
       const res = await fetch('/api/text', { method: 'POST', body: form });
       if (!res.ok) {
@@ -695,120 +617,6 @@
   }
 
   // ---------------------------------------------------------------
-  // VISION API SETTINGS
-  // ---------------------------------------------------------------
-  function toggleVision() {
-    const body = document.getElementById('vision-body');
-    const arrow = document.getElementById('vision-arrow');
-    const open = body.classList.toggle('visible');
-    arrow.classList.toggle('open', open);
-  }
-
-  function getVisionMode() {
-    const checked = document.querySelector('input[name="vision-mode"]:checked');
-    return checked ? checked.value : 'none';
-  }
-
-  function onVisionModeChange() {
-    const mode = getVisionMode();
-    const sfField = document.getElementById('vf-server');
-    const ownField = document.getElementById('vf-own');
-
-    sfField.classList.toggle('visible', mode === 'server');
-    ownField.classList.toggle('visible', mode === 'own');
-
-    localStorage.setItem('tg_vision_mode', mode);
-    updateVisionBadge();
-
-    // Auto-save own key on input
-    if (mode === 'own') {
-      const input = document.getElementById('vi-api-key');
-      input.value = localStorage.getItem('tg_api_key') || '';
-    }
-    if (mode === 'server') {
-      const input = document.getElementById('vi-access-code');
-      input.value = localStorage.getItem('tg_access_code') || '';
-    }
-  }
-
-  function updateVisionBadge() {
-    const badge = document.getElementById('vision-badge');
-    const mode = getVisionMode();
-    if (mode === 'server' && localStorage.getItem('tg_access_verified') === 'true') {
-      badge.textContent = '● server';
-      badge.style.color = 'var(--green)';
-    } else if (mode === 'own' && localStorage.getItem('tg_api_key')) {
-      badge.textContent = '● own key';
-      badge.style.color = 'var(--green)';
-    } else if (mode === 'none') {
-      badge.textContent = '';
-    } else {
-      badge.textContent = '○ not set';
-      badge.style.color = 'var(--text-dim)';
-    }
-  }
-
-  async function verifyAccess() {
-    const input = document.getElementById('vi-access-code');
-    const status = document.getElementById('vs-access');
-    const code = input.value.trim();
-    if (!code) { status.textContent = ''; return; }
-
-    status.textContent = '…';
-    status.className = 'v-status';
-    try {
-      const form = new FormData();
-      form.append('access_code', code);
-      const res = await fetch('/api/vision/verify', { method: 'POST', body: form });
-      const data = await res.json();
-      if (data.valid) {
-        localStorage.setItem('tg_access_code', code);
-        localStorage.setItem('tg_access_verified', 'true');
-        status.textContent = '✓';
-        status.className = 'v-status ok';
-      } else {
-        localStorage.removeItem('tg_access_code');
-        localStorage.setItem('tg_access_verified', 'false');
-        status.textContent = data.reason || 'invalid';
-        status.className = 'v-status fail';
-      }
-    } catch {
-      status.textContent = 'error';
-      status.className = 'v-status fail';
-    }
-    updateVisionBadge();
-  }
-
-  // Auto-save own API key on blur and input
-  document.getElementById('vi-api-key').addEventListener('blur', function() {
-    const key = this.value.trim();
-    if (key) {
-      localStorage.setItem('tg_api_key', key);
-      document.getElementById('vs-key').textContent = '✓ saved';
-      document.getElementById('vs-key').className = 'v-status ok';
-    } else {
-      localStorage.removeItem('tg_api_key');
-      document.getElementById('vs-key').textContent = '';
-    }
-    updateVisionBadge();
-  });
-  document.getElementById('vi-api-key').addEventListener('input', function() {
-    const key = this.value.trim();
-    if (key) {
-      localStorage.setItem('tg_api_key', key);
-    }
-    updateVisionBadge();
-  });
-
-  // Restore vision settings from localStorage on load
-  function restoreVisionSettings() {
-    const mode = localStorage.getItem('tg_vision_mode') || 'none';
-    const radio = document.getElementById('vm-' + mode);
-    if (radio) radio.checked = true;
-    onVisionModeChange();
-  }
-
-  // ---------------------------------------------------------------
   // SHARED HELPERS
   // ---------------------------------------------------------------
   function show(id) { document.getElementById(id).classList.add('visible'); }
@@ -875,9 +683,6 @@
       sel.appendChild(opt);
     }
   }).catch(() => {});
-
-  // Restore vision API settings
-  restoreVisionSettings();
 </script>
 </body>
 </html>
