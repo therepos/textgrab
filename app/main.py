@@ -44,6 +44,8 @@ async def text_extract(
     files: List[UploadFile] = File(...),
     scheme: str = Form("raw"),
     output_mode: str = Form("consolidated"),
+    api_key: str = Form(""),
+    access_code: str = Form(""),
 ):
     """Extract text from file(s) with optional scheme transformation."""
     if not files:
@@ -136,7 +138,27 @@ async def text_extract(
             )
 
     try:
-        result = scheme_mod.transform(extracted, output_mode)
+        # Resolve vision API key:
+        # 1. User-supplied key takes priority
+        # 2. Server key requires valid access code
+        # 3. No key → OCR fallback (handled inside scheme)
+        resolved_key = ""
+        if api_key:
+            resolved_key = api_key
+        elif access_code:
+            server_code = os.environ.get("VISION_ACCESS_CODE", "")
+            server_key = os.environ.get("ANTHROPIC_API_KEY", "")
+            if server_code and access_code == server_code and server_key:
+                resolved_key = server_key
+            elif server_code and access_code != server_code:
+                raise HTTPException(status_code=403, detail="Invalid access code")
+
+        # Pass api_key to schemes that support it (e.g. mhtml2md for vision API)
+        try:
+            result = scheme_mod.transform(extracted, output_mode, api_key=resolved_key)
+        except TypeError:
+            # Scheme doesn't accept api_key — call without it
+            result = scheme_mod.transform(extracted, output_mode)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scheme transform failed: {str(e)}")
 
@@ -412,6 +434,19 @@ def upsert_lookup(
 # ===================================================================
 # HEALTH + VERSION
 # ===================================================================
+@app.post("/api/vision/verify")
+def verify_vision_access(access_code: str = Form("")):
+    """Verify access code for server-side vision API key."""
+    server_code = os.environ.get("VISION_ACCESS_CODE", "")
+    server_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    if not server_code or not server_key:
+        return {"valid": False, "reason": "Server vision not configured"}
+    if access_code == server_code:
+        return {"valid": True}
+    return {"valid": False, "reason": "Invalid access code"}
+
+
 @app.get("/api/health")
 def health():
     lookup_path = Path("/data/models/lookup.json")
@@ -424,7 +459,12 @@ def health():
 
 @app.get("/api/version")
 def version():
-    return {"service": "textgrab", "version": "4.0"}
+    return {
+        "service": "textgrab",
+        "version": "4.1",
+        "vision_configured": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "vision_gated": bool(os.environ.get("VISION_ACCESS_CODE")),
+    }
 
 
 # ===================================================================
