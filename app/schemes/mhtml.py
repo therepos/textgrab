@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Scheme metadata (required by registry)
 # ---------------------------------------------------------------------------
-LABEL = "MHTML → Clean Markdown"
+LABEL = "MHTML → Markdown"
 ACCEPTS = [".mhtml", ".mht"]
 MULTI_FILE = True
 OUTPUT_OPTIONS = ["consolidated", "individual"]
