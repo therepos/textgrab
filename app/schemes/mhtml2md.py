@@ -825,6 +825,14 @@ def _convert_run_to_list(parent: etree._Element, items: List[etree._Element]):
 def _normalise(doc: etree._Element) -> etree._Element:
     """Clean up whitespace, encoding artefacts, and empty elements."""
 
+    # Pass 0: convert <u> to <strong>
+    # Markdown has no underline — markdownify drops <u> entirely.
+    # In government documents, <u> is used as a label/title marker with
+    # the same semantic intent as <strong>.  Converting preserves emphasis.
+    # (By this stage, <u> inside promoted headings was already stripped.)
+    for el in list(doc.iter("u")):
+        el.tag = "strong"
+
     # Pass 1: normalise text content
     for el in doc.iter():
         # Normalise element text
@@ -924,73 +932,8 @@ def _html_to_markdown(doc: etree._Element) -> str:
     # Post-processing
     result = _postprocess_markdown(result)
 
-    # Apply hierarchical indentation based on numbering patterns
-    result = _apply_hierarchical_indent(result)
-
     return result
 
-
-# Numbering patterns → indent level (order matters: most specific first)
-_INDENT_PATTERNS = [
-    # Level 1: sub-numbering like 2.1, 10.3
-    (re.compile(r"^\d+\.\d+\.?\s"), 1),
-    # Level 2: letter sub-points like a), b)
-    (re.compile(r"^[a-hj-uw-z]\)\s"), 2),
-    # Level 3: roman numeral sub-points like i), ii), iv), vi)
-    (re.compile(r"^[ivxlc]+\)\s"), 3),
-    # Level 0: top-level numbering like 1., 2., 10.
-    (re.compile(r"^\d+\.\s"), 0),
-]
-
-_INDENT_UNIT = "   "  # 3 spaces per level
-
-
-def _apply_hierarchical_indent(text: str) -> str:
-    """Add indentation to numbered paragraphs based on their numbering pattern.
-
-    Detects hierarchical numbering (1. / 2.1 / a) / i)) and indents
-    accordingly so that the document structure is visually clear for
-    LLM consumption.
-    """
-    blocks = text.split("\n\n")
-    result_blocks = []
-
-    for block in blocks:
-        if not block.strip():
-            result_blocks.append(block)
-            continue
-
-        # Skip blocks that are markdown structural elements
-        first_line = block.lstrip()
-        if (first_line.startswith("#")       # heading
-            or first_line.startswith("|")     # table
-            or first_line.startswith("---")   # HR / frontmatter
-            or first_line.startswith("```")   # code fence
-            or first_line.startswith("> ")):  # blockquote
-            result_blocks.append(block)
-            continue
-
-        # Detect numbering level
-        level = None
-        for pattern, lvl in _INDENT_PATTERNS:
-            if pattern.match(first_line):
-                level = lvl
-                break
-
-        if level is not None and level > 0:
-            indent = _INDENT_UNIT * level
-            # Indent all lines of the block
-            indented_lines = []
-            for line in block.split("\n"):
-                if line.strip():
-                    indented_lines.append(indent + line)
-                else:
-                    indented_lines.append(line)
-            result_blocks.append("\n".join(indented_lines))
-        else:
-            result_blocks.append(block)
-
-    return "\n\n".join(result_blocks)
 
 
 def _postprocess_markdown(text: str) -> str:
