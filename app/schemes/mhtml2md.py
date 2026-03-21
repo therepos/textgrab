@@ -14,6 +14,7 @@ Pipeline stages:
 """
 
 import email
+import os
 import re
 import logging
 from typing import Dict, List, Tuple, Any, Optional
@@ -942,6 +943,8 @@ def _describe_images(
     if not img_elements:
         return doc
 
+    logger.info(f"Found {len(img_elements)} <img> tags in content")
+
     for img in img_elements:
         src = img.get("src", "")
         alt = img.get("alt", "")
@@ -960,9 +963,15 @@ def _describe_images(
                 break
 
         # No matching image part, or too small (icon/UI element) — remove
-        if image_data is None or len(image_data) < _MIN_IMAGE_SIZE:
+        if image_data is None:
             _remove_element_preserve_tail(img)
             continue
+        if len(image_data) < _MIN_IMAGE_SIZE:
+            logger.debug(f"Skipping small image ({len(image_data)}B): {src[:60]}")
+            _remove_element_preserve_tail(img)
+            continue
+
+        logger.info(f"Describing image ({len(image_data)}B, {media_type}): {src[:60]}")
 
         # Attempt vision API description
         description = None
@@ -1008,10 +1017,16 @@ def _describe_with_vision(
     from urllib.request import Request, urlopen
     from urllib.error import URLError, HTTPError
 
+    # Validate media type — Anthropic only accepts these
+    _SUPPORTED_MEDIA = {"image/png", "image/jpeg", "image/gif", "image/webp"}
+    if media_type not in _SUPPORTED_MEDIA:
+        logger.warning(f"Unsupported image media type: {media_type}, skipping vision")
+        return None
+
     b64 = base64.b64encode(image_data).decode("ascii")
 
     body = json.dumps({
-        "model": "claude-sonnet-4-20250514",
+        "model": os.environ.get("VISION_MODEL", "claude-sonnet-4-6"),
         "max_tokens": 1024,
         "messages": [{
             "role": "user",
@@ -1052,7 +1067,14 @@ def _describe_with_vision(
             if description:
                 logger.info(f"Vision API described image ({len(image_data)}B)")
                 return description
-    except (URLError, HTTPError, json.JSONDecodeError, KeyError) as e:
+    except HTTPError as e:
+        # Read the error response body for better diagnostics
+        try:
+            err_body = e.read().decode("utf-8", errors="ignore")[:500]
+            logger.warning(f"Vision API {e.code}: {err_body}")
+        except Exception:
+            logger.warning(f"Vision API failed: {e}")
+    except (URLError, json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Vision API failed: {e}")
 
     return None
