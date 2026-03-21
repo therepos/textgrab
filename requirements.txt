@@ -10,4 +10,5 @@ numpy
 python-doctr[torch]
 torch
 img2table
+lxml>=5.0.0
 markdownify>=0.13.0
