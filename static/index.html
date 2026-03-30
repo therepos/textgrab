@@ -392,10 +392,33 @@
 
       const res = await fetch('/api/text', { method: 'POST', body: form });
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Extraction failed');
+        let detail = `Server error (${res.status})`;
+        try {
+          const contentType = res.headers.get('content-type') || '';
+          if (contentType.includes('application/json')) {
+            const err = await res.json();
+            detail = err.detail || detail;
+          } else {
+            const text = await res.text();
+            // If it's an HTML error page from a reverse proxy, extract useful info
+            if (text.startsWith('<!') || text.startsWith('<html')) {
+              if (res.status === 413) detail = 'Upload too large — increase your reverse proxy body size limit (e.g. nginx client_max_body_size)';
+              else if (res.status === 502) detail = 'Bad gateway — the backend may be down or restarting';
+              else if (res.status === 504) detail = 'Gateway timeout — extraction took too long';
+              else detail = `Server returned ${res.status} (HTML error page — likely from reverse proxy)`;
+            } else {
+              detail = text.slice(0, 200) || detail;
+            }
+          }
+        } catch (_) { /* keep default detail */ }
+        throw new Error(detail);
       }
-      const data = await res.json();
+      let data;
+      try {
+        data = await res.json();
+      } catch (e) {
+        throw new Error('Server returned an invalid response (not JSON). Check if a reverse proxy is interfering.');
+      }
 
       // Individual files mode
       if (data.files && !data.text) {
