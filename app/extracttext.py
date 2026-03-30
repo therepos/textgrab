@@ -58,13 +58,75 @@ def _ocr_with_doctr(images: list) -> str:
     pages = [np.array(img.convert("RGB")) for img in images]
     result = model(pages)
     text_parts = []
-    for page in result.pages:
-        page_text = []
+    for page_idx, page in enumerate(result.pages):
+        h, w = pages[page_idx].shape[:2]
+        # Collect all words with absolute pixel positions
+        words = []
         for block in page.blocks:
             for line in block.lines:
-                line_text = " ".join(word.value for word in line.words)
-                page_text.append(line_text)
-        text_parts.append("\n".join(page_text))
+                for word in line.words:
+                    (x0, y0), (x1, y1) = word.geometry
+                    words.append({
+                        'text': word.value,
+                        'x0': x0 * w,
+                        'y0': y0 * h,
+                        'x1': x1 * w,
+                        'y1': y1 * h,
+                        'cy': (y0 + y1) * h / 2,
+                        'cx': (x0 + x1) * w / 2,
+                    })
+
+        if not words:
+            text_parts.append("")
+            continue
+
+        # Group words into visual rows by y-center clustering
+        words.sort(key=lambda wd: wd['cy'])
+        rows = []
+        current_row = [words[0]]
+        # Use a fraction of typical word height as threshold
+        avg_h = sum(wd['y1'] - wd['y0'] for wd in words) / len(words)
+        row_threshold = avg_h * 0.5
+
+        for wd in words[1:]:
+            if abs(wd['cy'] - current_row[0]['cy']) < row_threshold:
+                current_row.append(wd)
+            else:
+                rows.append(current_row)
+                current_row = [wd]
+        rows.append(current_row)
+
+        # For each row, sort words left to right and detect column gaps
+        page_lines = []
+        for row_words in rows:
+            row_words.sort(key=lambda wd: wd['x0'])
+
+            # Detect large horizontal gaps (likely table column separators)
+            # A "large gap" is significantly bigger than a normal word space
+            gaps = []
+            for i in range(1, len(row_words)):
+                gap = row_words[i]['x0'] - row_words[i - 1]['x1']
+                gaps.append(gap)
+
+            if gaps:
+                avg_space = sum(g for g in gaps if g > 0) / max(1, sum(1 for g in gaps if g > 0))
+                col_gap_threshold = max(avg_space * 2.5, avg_h * 1.5)
+            else:
+                col_gap_threshold = avg_h * 1.5
+
+            # Build the line, inserting " | " at large gaps
+            parts = [row_words[0]['text']]
+            for i in range(1, len(row_words)):
+                gap = row_words[i]['x0'] - row_words[i - 1]['x1']
+                if gap > col_gap_threshold:
+                    parts.append(' | ')
+                else:
+                    parts.append(' ')
+                parts.append(row_words[i]['text'])
+
+            page_lines.append(''.join(parts))
+
+        text_parts.append("\n".join(page_lines))
     return "\n\n".join(text_parts)
 
 
@@ -106,11 +168,16 @@ def _clean_lines(text: str) -> str:
 # Format-specific extractors
 # ---------------------------------------------------------------------------
 def _extract_from_pdf(content: bytes) -> str:
-    """Extract text from PDF. pdfplumber first, doctr OCR fallback."""
+    """Extract text from PDF. pdfplumber (layout-aware) first, doctr OCR fallback."""
     text_parts = []
     with pdfplumber.open(io.BytesIO(content)) as pdf:
         for p in pdf.pages:
-            txt = p.extract_text(x_tolerance=2, y_tolerance=3) or ""
+            # Use layout mode to preserve table column alignment
+            try:
+                txt = p.extract_text(layout=True, x_tolerance=2, y_tolerance=3) or ""
+            except TypeError:
+                # Fallback if layout param not supported in this version
+                txt = p.extract_text(x_tolerance=2, y_tolerance=3) or ""
             text_parts.append(txt.rstrip())
 
     text = "\n".join(text_parts).strip()
