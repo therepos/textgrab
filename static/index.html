@@ -126,6 +126,7 @@
   .progress.visible { display: block; }
   .progress-bar { height: 3px; background: var(--surface); border-radius: 2px; overflow: hidden; }
   .progress-bar-fill { height: 100%; background: var(--accent); border-radius: 2px; animation: indeterminate 1.5s ease-in-out infinite; width: 40%; }
+  .progress-bar-fill.determinate { animation: none; width: 0%; transition: width 0.3s ease; }
   @keyframes indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }
   .progress-text { font-size: 0.8rem; color: var(--text-dim); margin-top: 8px; text-align: center; }
 
@@ -384,50 +385,95 @@
     const merged = document.getElementById('text-merged').checked;
     const outputMode = merged ? 'consolidated' : 'individual';
 
+    // Switch progress bar to determinate mode for multi-file
+    const progBar = document.querySelector('#prog-text .progress-bar-fill');
+    const progText = document.querySelector('#prog-text .progress-text');
+    if (files.length > 1) {
+      progBar.classList.add('determinate');
+      progBar.style.width = '0%';
+      progText.textContent = `Extracting file 1 of ${files.length}\u2026`;
+    } else {
+      progBar.classList.remove('determinate');
+      progBar.style.width = '';
+      progText.textContent = 'Extracting\u2026';
+    }
+
     try {
       const form = new FormData();
       for (const f of files) form.append('files', f);
       form.append('scheme', scheme);
       form.append('output_mode', outputMode);
 
-      const res = await fetch('/api/text', { method: 'POST', body: form });
+      const res = await fetch('/api/text/stream', { method: 'POST', body: form });
       if (!res.ok) {
         let detail = `Server error (${res.status})`;
         try {
-          const contentType = res.headers.get('content-type') || '';
-          if (contentType.includes('application/json')) {
+          const ct = res.headers.get('content-type') || '';
+          if (ct.includes('application/json')) {
             const err = await res.json();
             detail = err.detail || detail;
           } else {
             const text = await res.text();
-            // If it's an HTML error page from a reverse proxy, extract useful info
             if (text.startsWith('<!') || text.startsWith('<html')) {
-              if (res.status === 413) detail = 'Upload too large — increase your reverse proxy body size limit (e.g. nginx client_max_body_size)';
-              else if (res.status === 502) detail = 'Bad gateway — the backend may be down or restarting';
-              else if (res.status === 504) detail = 'Gateway timeout — extraction took too long';
-              else detail = `Server returned ${res.status} (HTML error page — likely from reverse proxy)`;
+              if (res.status === 413) detail = 'Upload too large \u2014 increase your reverse proxy body size limit';
+              else if (res.status === 502) detail = 'Bad gateway \u2014 the backend may be down or restarting';
+              else if (res.status === 504) detail = 'Gateway timeout \u2014 extraction took too long';
+              else detail = `Server returned ${res.status} (HTML error page \u2014 likely from reverse proxy)`;
             } else {
               detail = text.slice(0, 200) || detail;
             }
           }
-        } catch (_) { /* keep default detail */ }
+        } catch (_) {}
         throw new Error(detail);
       }
-      let data;
-      try {
-        data = await res.json();
-      } catch (e) {
-        throw new Error('Server returned an invalid response (not JSON). Check if a reverse proxy is interfering.');
+
+      // Parse SSE stream
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let data = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // Process complete SSE messages
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // keep incomplete line in buffer
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const msg = JSON.parse(line.slice(6));
+              if (msg.type === 'progress') {
+                const pct = Math.round((msg.current / msg.total) * 100);
+                progBar.style.width = pct + '%';
+                const shortName = msg.filename.length > 30
+                  ? msg.filename.slice(0, 27) + '\u2026'
+                  : msg.filename;
+                progText.textContent = `Extracting ${msg.current} of ${msg.total}: ${shortName}`;
+              } else if (msg.type === 'error') {
+                throw new Error(msg.detail);
+              } else if (msg.type === 'result') {
+                data = msg;
+              }
+            } catch (e) {
+              if (e.message && !e.message.includes('JSON')) throw e;
+            }
+          }
+        }
       }
+
+      if (!data) throw new Error('No result received from server');
 
       // Individual files mode
       if (data.files && !data.text) {
         const container = document.getElementById('res-text-files');
-        let html = '<div class="result-header"><h3>✓ Extraction complete</h3></div>';
+        let html = '<div class="result-header"><h3>\u2713 Extraction complete</h3></div>';
         data.files.forEach((f, i) => {
           html += `<div class="file-result">
             <div class="file-result-header">
-              <h4>📄 ${esc(f.filename)}</h4>
+              <h4>\ud83d\udcc4 ${esc(f.filename)}</h4>
               <div class="file-result-actions">
                 <button onclick="copyIndividual(${i})">Copy</button>
                 <button onclick="downloadIndividual(${i})">Download</button>
@@ -439,7 +485,7 @@
         if (data.glossary) {
           html += `<div class="file-result">
             <div class="file-result-header">
-              <h4>📋 Glossary</h4>
+              <h4>\ud83d\udccb Glossary</h4>
               <div class="file-result-actions">
                 <button onclick="copyGlossary()">Copy</button>
               </div>
@@ -460,7 +506,7 @@
         // Stats
         const statsEl = document.getElementById('res-text-stats');
         if (data.stats && Array.isArray(data.stats)) {
-          statsEl.textContent = data.stats.join(' • ');
+          statsEl.textContent = data.stats.join(' \u2022 ');
           statsEl.style.display = 'block';
         } else if (data.total_entries) {
           statsEl.textContent = `${data.total_entries} glossary entries`;
@@ -471,7 +517,7 @@
 
         // Title
         const title = document.getElementById('res-text-title');
-        title.innerHTML = '✓ Extraction complete';
+        title.innerHTML = '\u2713 Extraction complete';
         if (data.total_entries) {
           title.innerHTML += ` <span class="badge">${data.total_entries} entries</span>`;
         }
@@ -481,6 +527,10 @@
     } catch (e) {
       showError('err-text', e.message);
     } finally {
+      // Reset progress bar to indeterminate for next run
+      progBar.classList.remove('determinate');
+      progBar.style.width = '';
+      progText.textContent = 'Extracting\u2026';
       hide('prog-text');
       btn.disabled = false;
     }

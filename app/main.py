@@ -5,9 +5,13 @@ import logging
 from typing import List, Dict, Any
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, Form, Body, HTTPException
+import json
+import asyncio
+
+from fastapi import FastAPI, UploadFile, File, Form, Body, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.responses import Response
 
 from .extracttext import extract_text_from_bytes, get_file_type, SUPPORTED_EXTENSIONS
 from .extracttabular import (
@@ -151,6 +155,153 @@ async def text_extract(
 def list_schemes():
     """Return available schemes with their accepted file types."""
     return get_schemes()
+
+
+# ===================================================================
+# TAB 1 (SSE): TEXT — streaming extraction with per-file progress
+# ===================================================================
+@app.post("/api/text/stream")
+async def text_extract_stream(
+    files: List[UploadFile] = File(...),
+    scheme: str = Form("raw"),
+    output_mode: str = Form("consolidated"),
+):
+    """Extract text from file(s) with SSE progress events."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+
+    # Validate scheme upfront
+    schemes = get_schemes()
+    if scheme != "raw" and scheme not in schemes:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown scheme: {scheme}. Available: {list(schemes.keys())}",
+        )
+
+    raw_input = False
+    if scheme != "raw":
+        scheme_mod_check = get_scheme(scheme)
+        if scheme_mod_check and getattr(scheme_mod_check, "RAW_INPUT", False):
+            raw_input = True
+
+    # Read all file contents into memory before streaming
+    # (UploadFile objects can't be read inside the generator)
+    file_data = []
+    for f in files:
+        content = await f.read()
+        file_data.append((f.filename, content))
+
+    async def event_stream():
+        total = len(file_data)
+        extracted = {}
+        errors = []
+
+        for i, (filename, content) in enumerate(file_data):
+            # Send progress event
+            progress_data = {
+                "type": "progress",
+                "current": i + 1,
+                "total": total,
+                "filename": filename,
+            }
+            yield f"data: {json.dumps(progress_data)}\n\n"
+
+            try:
+                if raw_input:
+                    extracted[filename] = content
+                else:
+                    text = extract_text_from_bytes(content, filename)
+                    extracted[filename] = text
+            except Exception as e:
+                errors.append({"filename": filename, "error": str(e)})
+
+            # Yield control so the event can flush
+            await asyncio.sleep(0)
+
+        # Build final result (same logic as /api/text)
+        if not extracted and errors:
+            result = {"type": "error", "detail": f"All extractions failed: {errors}"}
+            yield f"data: {json.dumps(result)}\n\n"
+            return
+
+        if scheme == "raw":
+            if len(extracted) == 1:
+                fname, text = next(iter(extracted.items()))
+                result = {
+                    "type": "result",
+                    "scheme": "raw",
+                    "text": text,
+                    "filename": fname,
+                    "errors": errors,
+                }
+            else:
+                if output_mode == "individual":
+                    file_results = [
+                        {"filename": fn, "text": txt}
+                        for fn, txt in sorted(extracted.items())
+                    ]
+                    result = {
+                        "type": "result",
+                        "scheme": "raw",
+                        "merged": False,
+                        "files": file_results,
+                        "errors": errors,
+                    }
+                else:
+                    merged_parts = []
+                    for fn, txt in sorted(extracted.items()):
+                        merged_parts.append(f"=== {fn} ===\n\n{txt}")
+                    result = {
+                        "type": "result",
+                        "scheme": "raw",
+                        "merged": True,
+                        "text": "\n\n---\n\n".join(merged_parts),
+                        "filename": "merged_extraction.txt",
+                        "file_count": len(extracted),
+                        "errors": errors,
+                    }
+        else:
+            scheme_mod = get_scheme(scheme)
+            if scheme_mod is None:
+                result = {"type": "error", "detail": f"Scheme '{scheme}' not found"}
+                yield f"data: {json.dumps(result)}\n\n"
+                return
+
+            for fname in extracted:
+                ext = os.path.splitext(fname)[-1].lower()
+                if ext not in scheme_mod.ACCEPTS:
+                    result = {
+                        "type": "error",
+                        "detail": f"File '{fname}' ({ext}) not accepted by scheme '{scheme}'. "
+                                  f"Accepted: {scheme_mod.ACCEPTS}",
+                    }
+                    yield f"data: {json.dumps(result)}\n\n"
+                    return
+
+            try:
+                transform_result = scheme_mod.transform(extracted, output_mode)
+                result = {
+                    "type": "result",
+                    "scheme": scheme,
+                    "errors": errors,
+                    **transform_result,
+                }
+            except Exception as e:
+                result = {"type": "error", "detail": f"Scheme transform failed: {str(e)}"}
+                yield f"data: {json.dumps(result)}\n\n"
+                return
+
+        yield f"data: {json.dumps(result)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ===================================================================
