@@ -60,7 +60,6 @@ def _ocr_with_doctr(images: list) -> str:
     text_parts = []
     for page_idx, page in enumerate(result.pages):
         h, w = pages[page_idx].shape[:2]
-        # Collect all words with absolute pixel positions
         words = []
         for block in page.blocks:
             for line in block.lines:
@@ -73,61 +72,151 @@ def _ocr_with_doctr(images: list) -> str:
                         'x1': x1 * w,
                         'y1': y1 * h,
                         'cy': (y0 + y1) * h / 2,
-                        'cx': (x0 + x1) * w / 2,
                     })
 
         if not words:
             text_parts.append("")
             continue
 
-        # Group words into visual rows by y-center clustering
-        words.sort(key=lambda wd: wd['cy'])
-        rows = []
-        current_row = [words[0]]
-        # Use a fraction of typical word height as threshold
-        avg_h = sum(wd['y1'] - wd['y0'] for wd in words) / len(words)
-        row_threshold = avg_h * 0.5
-
-        for wd in words[1:]:
-            if abs(wd['cy'] - current_row[0]['cy']) < row_threshold:
-                current_row.append(wd)
-            else:
-                rows.append(current_row)
-                current_row = [wd]
-        rows.append(current_row)
-
-        # For each row, sort words left to right and detect column gaps
-        page_lines = []
-        for row_words in rows:
-            row_words.sort(key=lambda wd: wd['x0'])
-
-            # Detect large horizontal gaps (likely table column separators)
-            # A "large gap" is significantly bigger than a normal word space
-            gaps = []
-            for i in range(1, len(row_words)):
-                gap = row_words[i]['x0'] - row_words[i - 1]['x1']
-                gaps.append(gap)
-
-            if gaps:
-                avg_space = sum(g for g in gaps if g > 0) / max(1, sum(1 for g in gaps if g > 0))
-                col_gap_threshold = max(avg_space * 2.5, avg_h * 1.5)
-            else:
-                col_gap_threshold = avg_h * 1.5
-
-            # Build the line, inserting " | " at large gaps
-            parts = [row_words[0]['text']]
-            for i in range(1, len(row_words)):
-                gap = row_words[i]['x0'] - row_words[i - 1]['x1']
-                if gap > col_gap_threshold:
-                    parts.append(' | ')
-                else:
-                    parts.append(' ')
-                parts.append(row_words[i]['text'])
-
-            page_lines.append(''.join(parts))
-
-        text_parts.append("\n".join(page_lines))
+        page_text = _render_as_markdown(words, w, h)
+        text_parts.append(page_text)
     return "\n\n".join(text_parts)
+
+
+def _render_as_markdown(words: list, page_w: float, page_h: float) -> str:
+    """Render OCR words as markdown with tables for multi-column regions."""
+    from typing import List
+
+    # --- Step 1: Group words into visual rows ---
+    words.sort(key=lambda wd: wd['cy'])
+    avg_h = sum(wd['y1'] - wd['y0'] for wd in words) / len(words)
+    row_threshold = avg_h * 0.6
+
+    rows: List[list] = []
+    current_row = [words[0]]
+    current_cy = words[0]['cy']
+    for wd in words[1:]:
+        if abs(wd['cy'] - current_cy) < row_threshold:
+            current_row.append(wd)
+        else:
+            rows.append(current_row)
+            current_row = [wd]
+            current_cy = wd['cy']
+    rows.append(current_row)
+
+    for row in rows:
+        row.sort(key=lambda wd: wd['x0'])
+
+    # --- Step 2: For each row, find its column splits ---
+    # Compute a global "normal word spacing" from all rows — the typical gap
+    # between words within a cell. This anchors our threshold.
+    all_small_gaps = []
+    for row in rows:
+        for i in range(1, len(row)):
+            g = row[i]['x0'] - row[i - 1]['x1']
+            if 0 < g < avg_h * 2:
+                all_small_gaps.append(g)
+    typical_word_gap = sorted(all_small_gaps)[len(all_small_gaps) // 2] if all_small_gaps else avg_h * 0.5
+
+    def _split_row(row_words: list) -> List[str]:
+        """Split a row into cells based on large gaps. Returns list of cell texts."""
+        if len(row_words) < 2:
+            return [" ".join(wd['text'] for wd in row_words)]
+
+        # Calculate gaps between consecutive words
+        gaps = []
+        for i in range(1, len(row_words)):
+            gap_size = row_words[i]['x0'] - row_words[i - 1]['x1']
+            gaps.append(gap_size)
+
+        # A gap is a "column break" if it's much larger than typical word spacing.
+        # Use absolute threshold based on global typical word gap, not per-row median.
+        threshold = max(typical_word_gap * 4.0, avg_h * 1.0)
+
+        # Build cells by splitting at large gaps
+        cells = []
+        current_cell_words = [row_words[0]]
+        for i in range(1, len(row_words)):
+            if gaps[i - 1] > threshold:
+                cells.append(" ".join(wd['text'] for wd in current_cell_words))
+                current_cell_words = [row_words[i]]
+            else:
+                current_cell_words.append(row_words[i])
+        cells.append(" ".join(wd['text'] for wd in current_cell_words))
+
+        return cells
+
+    # Compute cells for every row
+    row_cells = [_split_row(row) for row in rows]
+
+    # --- Step 3: Group consecutive rows with same column count into tables ---
+    output_lines = []
+    i = 0
+    while i < len(row_cells):
+        cells = row_cells[i]
+        n_cols = len(cells)
+
+        if n_cols <= 1:
+            # Single-column row = plain text
+            text = cells[0] if cells else ""
+            if text.strip():
+                output_lines.append(text)
+            i += 1
+            continue
+
+        # Multi-column row: look ahead for consecutive rows with same column count
+        group_start = i
+        group = [cells]
+        j = i + 1
+        while j < len(row_cells) and len(row_cells[j]) == n_cols:
+            group.append(row_cells[j])
+            j += 1
+
+        # Render as markdown table
+        # If group has 2+ rows, first row = header
+        if len(group) >= 2:
+            header = group[0]
+            output_lines.append("")
+            output_lines.append("| " + " | ".join(c.strip() for c in header) + " |")
+            output_lines.append("| " + " | ".join("---" for _ in header) + " |")
+            for body_row in group[1:]:
+                output_lines.append("| " + " | ".join(c.strip() for c in body_row) + " |")
+            output_lines.append("")
+        else:
+            # Single multi-column row — still a table (no header/body distinction)
+            output_lines.append("")
+            output_lines.append("| " + " | ".join(c.strip() for c in cells) + " |")
+            output_lines.append("| " + " | ".join("---" for _ in cells) + " |")
+            output_lines.append("")
+
+        i = j
+
+    # Clean up excessive blank lines
+    cleaned = []
+    prev_blank = False
+    for line in output_lines:
+        if line.strip() == "":
+            if not prev_blank:
+                cleaned.append("")
+            prev_blank = True
+        else:
+            cleaned.append(line)
+            prev_blank = False
+    return "\n".join(cleaned).strip()
+
+
+def _cluster_positions(values: list, tolerance: float) -> list:
+    """Cluster numeric values and return the mean of each cluster."""
+    if not values:
+        return []
+    values = sorted(values)
+    clusters = [[values[0]]]
+    for v in values[1:]:
+        if v - clusters[-1][-1] < tolerance:
+            clusters[-1].append(v)
+        else:
+            clusters.append([v])
+    return [sum(c) / len(c) for c in clusters]
 
 
 # ---------------------------------------------------------------------------
