@@ -1,6 +1,7 @@
 # textgrab
 
-Self-hosted text extraction and tabular data conversion.
+Self-hosted text extraction and tabular data conversion.  
+Deterministic reproducible output.
 
 ## Tabs
 
