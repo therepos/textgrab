@@ -1,3 +1,5 @@
+# docker pull ghcr.io/therepos/textgrab:latest
+
 services:
   textgrab:
     image: ghcr.io/therepos/textgrab:latest
