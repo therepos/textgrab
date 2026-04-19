@@ -12,3 +12,10 @@ services:
       - seccomp=unconfined
     labels:
       - "com.centurylinklabs.watchtower.enable=true"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
