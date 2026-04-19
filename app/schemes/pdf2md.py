@@ -878,8 +878,9 @@ _DOCLING_CONVERTER = None            # cached DocumentConverter instance
 _DOCLING_INIT_ERROR: Optional[str] = None  # non-None means init failed permanently
 
 # Tunables
-DOCLING_IMAGES_SCALE = 2.0           # 2.0 ~ 144 DPI for figure crops
+DOCLING_IMAGES_SCALE = 1.5           # 1.5 ~ 108 DPI for figure crops — sharpness sufficient for previews, ~2x faster raster than 2.0
 DOCLING_MAX_FIGURES_PER_DOC = 200    # cap to bound memory
+DOCLING_MAX_PAGES = 200              # soft cap; past this, Docling is told to stop and we fall back
 DOCLING_OCR_LANGS = ["en"]           # EasyOCR language codes
 
 
@@ -1004,7 +1005,7 @@ def _convert_single_docling(content: bytes, filename: str) -> Tuple[str, List[di
     warnings: List[str] = []
 
     src = DocumentStream(name=filename, stream=BytesIO(content))
-    result = converter.convert(src, raises_on_error=True)
+    result = converter.convert(src, raises_on_error=True, max_num_pages=DOCLING_MAX_PAGES)
 
     # Markdown straight from Docling's exporter.
     markdown = result.document.export_to_markdown() or ""

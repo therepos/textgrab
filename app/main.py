@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="textgrab",
-    version="4.0",
+    version="4.3.0",
     description="Text extraction + tabular data conversion",
     docs_url="/docs",
     redoc_url=None,
@@ -279,7 +279,33 @@ async def text_extract_stream(
                     return
 
             try:
-                transform_result = scheme_mod.transform(extracted, output_mode)
+                # Tell the client the slow phase is starting. For pdf2md
+                # this is where Docling inference happens (layout →
+                # TableFormer → OCR if needed).  The client uses this to
+                # change the progress text; we can't give real intra-
+                # Docling progress because its pipeline is synchronous.
+                scheme_label = getattr(scheme_mod, "LABEL", scheme)
+                is_pdf2md = (scheme == "pdf2md")
+                processing_data = {
+                    "type": "processing",
+                    "scheme": scheme,
+                    "scheme_label": scheme_label,
+                    "engine": "Docling" if is_pdf2md else scheme_label,
+                    "file_count": len(extracted),
+                    "hint": (
+                        "Docling inference — layout + tables"
+                        + (" + OCR" if is_pdf2md else "")
+                        + "; this runs on CPU and may take ~10-30s per page."
+                    ) if is_pdf2md else "Transforming…",
+                }
+                yield f"data: {json.dumps(processing_data)}\n\n"
+                await asyncio.sleep(0)
+
+                # Run in a worker thread so the event loop can still
+                # flush the event above before transform() blocks.
+                transform_result = await asyncio.to_thread(
+                    scheme_mod.transform, extracted, output_mode,
+                )
                 result = {
                     "type": "result",
                     "scheme": scheme,
