@@ -160,6 +160,770 @@ class PageStats:
     heading_candidates: int = 0
 
 
+# ===========================================================================
+# Post-processing cleanups (applied to both Docling + heuristic output)
+# ===========================================================================
+# Three passes, each independent and idempotent:
+#   1. strip_repeating_headers_footers — repetition-based, not position-based
+#   2. strip_toc                       — drops TOC section(s) entirely
+#   3. extract_footnotes               — lifts superscript-marked notes to
+#                                        document-end markdown footnotes
+#
+# All three operate on the final markdown string.  Passes 1 + 3 need access
+# to pdfplumber data (font sizes, per-page lines) so they take `content`
+# bytes as a secondary input.
+
+# Tunables
+HEADER_FOOTER_MIN_PAGES = 5          # skip detection on very short docs
+HEADER_FOOTER_REPEAT_RATIO = 0.6     # appears on ≥60% of pages → strip
+HEADER_FOOTER_BAND_LINES = 3         # top/bottom N lines per page to consider
+
+# TOC detection: look for a page whose first heading-like line is one of these
+TOC_TITLES = {"contents", "table of contents"}
+
+# Footnote detection: a marker digit is "superscript" if its font size is
+# less than body_size * this ratio.
+FOOTNOTE_SUPERSCRIPT_RATIO = 0.78
+
+
+def _normalise_line(s: str) -> str:
+    """Whitespace-collapse a line for repetition hashing. Page numbers become
+    a single token '#' so 'SB-FRS 102\\n5' and 'SB-FRS 102\\n6' hash alike."""
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"\b\d{1,4}\b", "#", s)   # collapse page-number-like digits
+    return s.lower()
+
+
+def _page_band_lines(content: bytes, band: int = HEADER_FOOTER_BAND_LINES) -> Tuple[List[List[str]], List[List[str]]]:
+    """Return (top_lines_per_page, bottom_lines_per_page).  Each is a list of
+    `band`-length line lists; short pages pad to empty strings.  Uses
+    pdfplumber's layout-preserving extract_text so lines match the visual
+    order."""
+    top_per_page: List[List[str]] = []
+    bot_per_page: List[List[str]] = []
+    try:
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            for page in pdf.pages:
+                try:
+                    raw = page.extract_text(x_tolerance=2, y_tolerance=3) or ""
+                except Exception:
+                    raw = ""
+                lines = [ln for ln in raw.splitlines() if ln.strip()]
+                top = lines[:band] + [""] * max(0, band - len(lines[:band]))
+                bot = lines[-band:] + [""] * max(0, band - len(lines[-band:]))
+                top_per_page.append(top)
+                bot_per_page.append(bot)
+    except Exception as e:
+        logger.warning(f"header/footer probe failed: {e}")
+    return top_per_page, bot_per_page
+
+
+def _find_repeating_strings(content: bytes) -> List[str]:
+    """Identify literal (non-normalised) line strings that appear as a page
+    header or footer on ≥HEADER_FOOTER_REPEAT_RATIO of pages.
+
+    Returns lowercased, whitespace-collapsed, page-number-masked fingerprints
+    — callers compare incoming markdown lines against the same normalisation.
+    """
+    tops, bots = _page_band_lines(content)
+    n = len(tops)
+    if n < HEADER_FOOTER_MIN_PAGES:
+        return []
+
+    from collections import Counter
+    counter: Counter[str] = Counter()
+    for bands in (tops, bots):
+        for page_lines in bands:
+            # Dedupe within a page so a page that accidentally repeats a line
+            # doesn't get double-counted.
+            seen_on_page = set()
+            for ln in page_lines:
+                norm = _normalise_line(ln)
+                if not norm or norm == "#":
+                    continue
+                if len(norm) < 2:
+                    continue
+                if norm in seen_on_page:
+                    continue
+                seen_on_page.add(norm)
+                counter[norm] += 1
+
+    threshold = max(2, int(n * HEADER_FOOTER_REPEAT_RATIO))
+    return [s for s, c in counter.items() if c >= threshold]
+
+
+def _strip_repeating_headers_footers(markdown: str, content: bytes) -> Tuple[str, int]:
+    """Drop lines from the markdown whose normalised form matches a
+    repeating header/footer fingerprint.
+
+    Returns (cleaned_markdown, count_stripped).  Also strips bare
+    page-number lines (a single number alone on a line) because those are
+    never content.
+    """
+    fingerprints = set(_find_repeating_strings(content))
+
+    out_lines: List[str] = []
+    stripped = 0
+    bare_num_re = re.compile(r"^\s*\d{1,4}\s*$")
+
+    for ln in markdown.splitlines():
+        # Bare page number lines — always noise
+        if bare_num_re.match(ln):
+            stripped += 1
+            continue
+        norm = _normalise_line(ln)
+        if norm and norm in fingerprints:
+            stripped += 1
+            continue
+        out_lines.append(ln)
+
+    cleaned = "\n".join(out_lines)
+    return cleaned, stripped
+
+
+# ---------------------------------------------------------------------------
+# TOC stripping
+# ---------------------------------------------------------------------------
+# Two detection modes:
+#   1. Title-based — a heading whose text matches TOC_TITLES.
+#   2. Structural — a section whose body content is overwhelmingly
+#      "entry<sep>page-number" shaped (either as a markdown table where
+#      most rows end in a number-like token, or as short lines where
+#      most end in a page-number code).  Catches cases where Docling
+#      labels the TOC page with the document code instead of "Contents".
+# Both modes drop the entire section (heading + body).
+
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+
+# A "page number code" as found in TOCs: plain integers, or integers with
+# 1-2 uppercase letter suffixes ("33A", "59B", "43D"), or roman numerals.
+_PAGE_NUM_RE = re.compile(r"^(?:\d{1,4}[A-Z]{0,2}|[ivxIVX]{1,6})$")
+
+
+def _looks_like_toc_row(line: str) -> bool:
+    """A TOC row ends in a page-number-like token after some text.
+    Handles both pipe-table rows `| TEXT | 33A |` and plain lines
+    `TEXT ... 33A`."""
+    s = line.strip()
+    if not s:
+        return False
+
+    # Pipe-table row: inspect the last non-empty cell
+    if s.startswith("|") and s.count("|") >= 2:
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        cells = [c for c in cells if c]
+        if not cells:
+            return False
+        # Table separator row like |---|---|
+        if all(set(c) <= set("-: ") for c in cells):
+            return False
+        last = cells[-1]
+        # TOC row: last cell is a page-number code and there's at least
+        # one non-empty text cell before it
+        if _PAGE_NUM_RE.match(last) and len(cells) >= 2:
+            return True
+        # Also: last cell is empty BUT the second-to-last is a page number
+        # (handled above since we filtered empties)
+        return False
+
+    # Plain text line: does it end in a number-like token preceded by text?
+    # Strip trailing punctuation first.
+    s2 = s.rstrip(".")
+    parts = s2.rsplit(None, 1)
+    if len(parts) != 2:
+        return False
+    head, tail = parts
+    if _PAGE_NUM_RE.match(tail) and len(head) >= 3:
+        return True
+    return False
+
+
+def _section_is_toc_shaped(body_lines: List[str]) -> bool:
+    """Return True if a section body reads as a table of contents.
+
+    Criteria:
+      - At least 5 candidate rows total (text/table rows after filtering
+        blanks and dividers).
+      - ≥60% of candidate rows match _looks_like_toc_row.
+      - No long-prose rows (lines over 200 chars that aren't table rows
+        almost certainly mean real prose).
+    """
+    rows: List[str] = []
+    for ln in body_lines:
+        s = ln.strip()
+        if not s:
+            continue
+        # Skip table separators and horizontal rules
+        if set(s) <= set("-=: |"):
+            continue
+        # Skip headings (shouldn't be in body but be safe)
+        if _HEADING_RE.match(s):
+            continue
+        rows.append(s)
+
+    if len(rows) < 5:
+        return False
+
+    long_prose = sum(
+        1 for s in rows
+        if len(s) > 200 and not s.startswith("|")
+    )
+    if long_prose:
+        return False
+
+    toc_like = sum(1 for s in rows if _looks_like_toc_row(s))
+    return toc_like / len(rows) >= 0.60
+
+
+def _strip_toc_sections(markdown: str) -> Tuple[str, int]:
+    """Drop TOC heading + body. Returns (cleaned, sections_dropped).
+
+    Two passes fused into one loop: a section is dropped if either its
+    heading matches a known TOC title, or its body is structurally TOC-
+    shaped.
+    """
+    lines = markdown.splitlines()
+    out: List[str] = []
+    i = 0
+    dropped = 0
+    n = len(lines)
+
+    while i < n:
+        m = _HEADING_RE.match(lines[i])
+        if m:
+            level = len(m.group(1))
+            title = m.group(2).strip().lower().rstrip(":.")
+
+            # Find the extent of this section: up to the next heading of
+            # equal or higher level.
+            j = i + 1
+            while j < n:
+                mj = _HEADING_RE.match(lines[j])
+                if mj and len(mj.group(1)) <= level:
+                    break
+                j += 1
+
+            body_lines = lines[i + 1:j]
+            if title in TOC_TITLES or _section_is_toc_shaped(body_lines):
+                dropped += 1
+                i = j
+                continue
+        out.append(lines[i])
+        i += 1
+
+    cleaned = "\n".join(out)
+
+    # Second pass (surgical): drop stand-alone runs of TOC-shaped rows
+    # that weren't caught by the heading-scoped pass.  This handles PDFs
+    # where a TOC lives under a heading whose section also contains real
+    # prose (so the whole section can't be dropped) — e.g. Docling labels
+    # the TOC page with the document code and the standalone intro prose
+    # after the table sits under the same heading.
+    stripped_lines, extra = _drop_inline_toc_runs(cleaned.splitlines())
+    return "\n".join(stripped_lines), dropped + extra
+
+
+def _drop_inline_toc_runs(lines: List[str]) -> Tuple[List[str], int]:
+    """Scan for consecutive runs of TOC-shaped rows and drop them.
+
+    A "run" is ≥5 lines that each match _looks_like_toc_row, possibly
+    interleaved with blank lines and pipe-table separator rows.  We drop
+    the run itself and the table frame rows (separator + any flanking
+    header) immediately surrounding it, but leave the rest of the
+    markdown untouched.
+    """
+    out: List[str] = []
+    dropped = 0
+    i = 0
+    n = len(lines)
+
+    def _is_sep_or_blank(s: str) -> bool:
+        t = s.strip()
+        if not t:
+            return True
+        if set(t) <= set("-=: |"):
+            return True
+        return False
+
+    def _is_pipe_row_no_num(s: str) -> bool:
+        """Pipe-table row whose last cell is empty or non-numeric — treat
+        as a run continuation (e.g. the `APPENDICES` + `A Defined terms`
+        block that trails the TOC proper without page numbers)."""
+        t = s.strip()
+        if not (t.startswith("|") and t.count("|") >= 2):
+            return False
+        if set(t) <= set("-=: |"):
+            return False
+        return True
+
+    while i < n:
+        # Probe a potential run starting at i
+        run_count = 0        # only counts STRICT TOC rows for threshold
+        probe = i
+        while probe < n:
+            if _looks_like_toc_row(lines[probe]):
+                run_count += 1
+                probe += 1
+            elif _is_sep_or_blank(lines[probe]):
+                probe += 1
+            elif run_count > 0 and _is_pipe_row_no_num(lines[probe]):
+                # A pipe-table row extends an already-started TOC run
+                probe += 1
+            else:
+                break
+
+        if run_count >= 5:
+            # Walk backwards through already-emitted output to drop:
+            #   (1) any trailing separators/blanks
+            #   (2) the table header row (first pipe row right above the run)
+            #   (3) orphan TOC labels like "from paragraph" — short lines
+            #       with no sentence-ending punctuation that sit immediately
+            #       above where the TOC run started
+            while out and _is_sep_or_blank(out[-1]):
+                out.pop()
+            if out and out[-1].lstrip().startswith("|"):
+                out.pop()
+                dropped += 1
+            while out and _is_sep_or_blank(out[-1]):
+                out.pop()
+            # Drop up to 2 short orphan label lines (column headers like
+            # "from paragraph", "Page", etc.)
+            for _ in range(2):
+                if not out:
+                    break
+                cand = out[-1].strip()
+                # Short (< 40 chars), not a heading, not ending in sentence
+                # punctuation, not a list/bullet, not a table row.
+                if (0 < len(cand) < 40
+                    and not _HEADING_RE.match(cand)
+                    and not cand.endswith((".", "!", "?", ":", ";"))
+                    and not cand.startswith(("-", "*", "|", ">"))
+                    and not cand[0].isdigit()):
+                    out.pop()
+                    dropped += 1
+                    while out and _is_sep_or_blank(out[-1]):
+                        out.pop()
+                else:
+                    break
+            dropped += run_count
+            i = probe
+            continue
+
+        out.append(lines[i])
+        i += 1
+
+    return out, dropped
+
+
+# ---------------------------------------------------------------------------
+# Footnote extraction
+# ---------------------------------------------------------------------------
+# Strategy: use pdfplumber to find superscript-sized digit runs in the body
+# and matching digit-prefixed lines at the bottom of each page.  Build a
+# {marker_digit: note_text} map, replace the in-body markers with `[^N]`,
+# and append a `[^N]: ...` section at the end.
+#
+# A digit is treated as a footnote marker only if:
+#   - its font size is < body_size * FOOTNOTE_SUPERSCRIPT_RATIO, AND
+#   - it's attached to a word (no preceding space), OR
+#   - it starts a bottom-of-page line (the definition line)
+#
+# The markdown mutation is conservative: we only rewrite digits that (a)
+# live inside a word-boundary in the markdown and (b) we're confident about
+# from the pdfplumber pass.  Non-matched digits are left alone.
+
+def _collect_footnotes(content: bytes) -> Tuple[Dict[str, str], List[str]]:
+    """Scan the PDF for superscript markers + matching definitions.
+
+    Returns (notes, markers_in_body):
+      notes: {marker: definition_text}
+      markers_in_body: ordered list of markers seen in body (for stable numbering)
+
+    Strategy:
+      - Body pass: find digit chars rendered in a font smaller than
+        body_size * FOOTNOTE_SUPERSCRIPT_RATIO, attached to a word (preceding
+        char is a non-space on the same baseline).  Skip math-exponent
+        contexts (`e0.42`, `10^-6`, etc.) via a small set of heuristics.
+      - Definition pass: in each page's bottom band (y > 80% of page height),
+        find lines that start with a small-size digit; collect the rest of
+        the line at body size as the definition text.  A definition is cut
+        off as soon as another small-size digit appears.
+    """
+    notes: Dict[str, str] = {}
+    markers_in_body: List[str] = []
+
+    try:
+        with pdfplumber.open(io.BytesIO(content)) as pdf:
+            # Body font size = mode across the document
+            all_sizes: List[float] = []
+            for page in pdf.pages:
+                for ch in page.chars or []:
+                    sz = ch.get("size")
+                    if sz and sz > 0:
+                        all_sizes.append(float(sz))
+            if not all_sizes:
+                return {}, []
+            from collections import Counter
+            sz_counter = Counter(round(s * 2) / 2 for s in all_sizes)
+            body_size = sz_counter.most_common(1)[0][0]
+            super_cutoff = body_size * FOOTNOTE_SUPERSCRIPT_RATIO
+
+            def _is_super(ch: dict) -> bool:
+                sz = float(ch.get("size", 0) or 0)
+                return 0 < sz < super_cutoff
+
+            def _same_line(a: dict, b: dict, tol: float = 3.0) -> bool:
+                return abs(float(a.get("top", 0)) - float(b.get("top", 0))) < tol
+
+            # Single-pass fused digit-run builder. Groups consecutive digits
+            # that share the "superscript" size tier and sit on the same
+            # baseline, so "10" is one marker not two.
+            def _runs_on_page(chars: List[dict]) -> List[Tuple[int, int, str]]:
+                """Return (start_idx, end_idx_exclusive, digits) for each
+                contiguous same-line superscript digit run on this page."""
+                runs = []
+                i = 0
+                n = len(chars)
+                while i < n:
+                    c = chars[i]
+                    if str(c.get("text", "")).isdigit() and _is_super(c):
+                        j = i + 1
+                        digits = [str(c.get("text", ""))]
+                        while j < n:
+                            cj = chars[j]
+                            if (str(cj.get("text", "")).isdigit() and _is_super(cj)
+                                and _same_line(c, cj)
+                                and float(cj.get("x0", 0)) - float(chars[j - 1].get("x1", 0)) < 2.5):
+                                digits.append(str(cj.get("text", "")))
+                                j += 1
+                            else:
+                                break
+                        runs.append((i, j, "".join(digits)))
+                        i = j
+                    else:
+                        i += 1
+                return runs
+
+            def _prev_nonspace(chars: List[dict], idx: int) -> Optional[dict]:
+                k = idx - 1
+                while k >= 0:
+                    t = str(chars[k].get("text", ""))
+                    if t and not t.isspace():
+                        return chars[k]
+                    k -= 1
+                return None
+
+            def _looks_like_math(chars: List[dict], start: int) -> bool:
+                """Return True if this digit run is in a math context rather
+                than a footnote marker. Covers `e0.42`, `e–0.18`, `10×e5`,
+                and decimals like `3.14`.  A sentence-ending period (`.` not
+                preceded by a digit) is NOT math."""
+                prev = _prev_nonspace(chars, start)
+                if prev is None:
+                    return False
+                pt = str(prev.get("text", ""))
+                # e^x notation: preceded by a lone 'e' or 'E'
+                if pt in ("e", "E"):
+                    pprev_idx = None
+                    for kk in range(chars.index(prev) - 1, -1, -1):
+                        tkk = str(chars[kk].get("text", ""))
+                        if tkk and not tkk.isspace():
+                            pprev_idx = kk
+                            break
+                    if pprev_idx is None:
+                        return True
+                    pptxt = str(chars[pprev_idx].get("text", ""))
+                    if pptxt.isspace() or pptxt in "(,×*":
+                        return True
+                # Immediately preceded by a digit — this is part of a number
+                if pt.isdigit():
+                    return True
+                # Preceded by a period — only math if the period is itself
+                # preceded by a digit (i.e. "3.14"), not a sentence end.
+                if pt == ".":
+                    pprev = _prev_nonspace(chars, chars.index(prev))
+                    if pprev is not None:
+                        pptxt = str(pprev.get("text", ""))
+                        if pptxt.isdigit():
+                            return True
+                return False
+
+            # --- Body pass ---
+            # A body marker: superscript digit whose IMMEDIATELY preceding
+            # non-space char on the same line is body-sized (i.e. the marker
+            # is attached to the end of a word in running prose).
+            # This works even when the marker appears in the bottom 20% of
+            # the page (e.g. the last line of prose just above a footnote
+            # separator), because it only depends on local context.
+            for page in pdf.pages:
+                chars = page.chars or []
+                for start, end, marker in _runs_on_page(chars):
+                    first = chars[start]
+                    prev = _prev_nonspace(chars, start)
+                    if prev is None:
+                        continue
+                    if not _same_line(prev, first):
+                        continue
+                    prev_sz = float(prev.get("size", 0) or 0)
+                    # Attached to body-sized text = body marker
+                    if prev_sz < super_cutoff:
+                        continue
+                    # Must attach to an alphabetic end of a word (not a label
+                    # code like "B" in "B4" — body markers in prose sit after
+                    # lowercase letters or closing punctuation).
+                    pt = str(prev.get("text", ""))
+                    if not (pt.isalpha() or pt in ").,;:?!'\""):
+                        continue
+                    if _looks_like_math(chars, start):
+                        continue
+                    if marker not in markers_in_body:
+                        markers_in_body.append(marker)
+
+            # --- Definition pass ---
+            # For each page, scan bottom 20% for lines that start with a
+            # small-size digit.  Collect the line's remaining chars (any
+            # size, same baseline within tolerance) as the definition.  A
+            # definition ends when a new small-size digit at the start of a
+            # subsequent line is hit.
+            for page in pdf.pages:
+                chars = page.chars or []
+                page_h = float(page.height)
+                bottom_chars = [c for c in chars if float(c.get("top", 0)) > page_h * 0.80]
+                if not bottom_chars:
+                    continue
+
+                # Group bottom chars into lines by top-y (2pt tol)
+                bottom_chars.sort(key=lambda c: (float(c.get("top", 0)), float(c.get("x0", 0))))
+                lines: List[List[dict]] = []
+                cur_top = None
+                cur: List[dict] = []
+                for c in bottom_chars:
+                    t = float(c.get("top", 0))
+                    if cur_top is None or abs(t - cur_top) < 2.5:
+                        cur.append(c)
+                        if cur_top is None:
+                            cur_top = t
+                    else:
+                        lines.append(cur)
+                        cur = [c]
+                        cur_top = t
+                if cur:
+                    lines.append(cur)
+
+                # For each line, check if it starts with a super-sized digit
+                # (potentially preceded by whitespace-equivalent chars).
+                for line_idx, line in enumerate(lines):
+                    # Find first non-space char
+                    first_idx = None
+                    for k, c in enumerate(line):
+                        if not str(c.get("text", "")).isspace():
+                            first_idx = k
+                            break
+                    if first_idx is None:
+                        continue
+                    first = line[first_idx]
+                    ft = str(first.get("text", ""))
+                    if not (ft.isdigit() and _is_super(first)):
+                        continue
+                    # Grow digit run to get full marker (e.g. "10")
+                    k = first_idx + 1
+                    digits = [ft]
+                    while k < len(line):
+                        nk = line[k]
+                        nt = str(nk.get("text", ""))
+                        if (nt.isdigit() and _is_super(nk)
+                            and float(nk.get("x0", 0)) - float(line[k - 1].get("x1", 0)) < 2.5):
+                            digits.append(nt)
+                            k += 1
+                        else:
+                            break
+                    marker = "".join(digits)
+                    # Determine this footnote's text size — it's the size of
+                    # the char immediately following the marker digit (or the
+                    # marker's own size tier's "partner" size).  Used to
+                    # filter out unrelated lines (page numbers, body text).
+                    note_text_size: Optional[float] = None
+                    for look in range(k, len(line)):
+                        sz = float(line[look].get("size", 0) or 0)
+                        if sz > 0 and not str(line[look].get("text", "")).isspace():
+                            note_text_size = sz
+                            break
+                    # Sanity check: a genuine footnote definition has text
+                    # rendered at a smaller-than-body font (typically 8pt vs
+                    # body 10pt).  If the text after the marker is body-
+                    # sized, this "line" is actually body prose with a
+                    # superscript marker embedded — not a definition.
+                    if note_text_size is not None and note_text_size >= super_cutoff * 1.15:
+                        # note_text_size too close to body size → skip
+                        continue
+                    # Collect definition text on this line, STOPPING if we
+                    # hit another super-sized digit.
+                    defn_parts: List[str] = []
+                    m = k
+                    while m < len(line):
+                        c = line[m]
+                        t = str(c.get("text", ""))
+                        if t.isdigit() and _is_super(c):
+                            break
+                        defn_parts.append(t)
+                        m += 1
+                    # Consume continuation lines that come before the next
+                    # marker-started line.  A continuation must (a) not start
+                    # with a super-sized digit, AND (b) have chars whose size
+                    # matches the note text size (rejects body-size leaks and
+                    # standalone page number lines).
+                    next_idx = line_idx + 1
+                    while next_idx < len(lines):
+                        cont = lines[next_idx]
+                        ck_idx = None
+                        for kk, cc in enumerate(cont):
+                            if not str(cc.get("text", "")).isspace():
+                                ck_idx = kk
+                                break
+                        if ck_idx is None:
+                            next_idx += 1
+                            continue
+                        cfirst = cont[ck_idx]
+                        cft = str(cfirst.get("text", ""))
+                        if cft.isdigit() and _is_super(cfirst):
+                            break
+                        # Font-size match check
+                        cfs = float(cfirst.get("size", 0) or 0)
+                        if note_text_size is not None and abs(cfs - note_text_size) > 0.5:
+                            # Different font tier (likely body text or page
+                            # number) — don't merge
+                            break
+                        # Standalone page-number line (just 1-4 digits, no
+                        # letters) — not a continuation
+                        line_txt = "".join(str(c.get("text", "")) for c in cont).strip()
+                        if line_txt.isdigit():
+                            break
+                        defn_parts.append(" ")
+                        for c in cont:
+                            defn_parts.append(str(c.get("text", "")))
+                        next_idx += 1
+                    defn = "".join(defn_parts).strip()
+                    # Also strip any trailing standalone digit (page number
+                    # that shared a baseline with the footnote text)
+                    defn = re.sub(r"\s+\d{1,4}\s*$", "", defn)
+                    if not defn:
+                        continue
+                    if marker not in notes:
+                        notes[marker] = defn
+    except Exception as e:
+        logger.warning(f"footnote scan failed: {e}", exc_info=True)
+        return {}, []
+
+    # Keep only notes that have both a body marker AND a definition
+    resolved = {m: notes[m] for m in markers_in_body if m in notes}
+    return resolved, markers_in_body
+
+
+def _rewrite_footnote_markers(markdown: str, notes: Dict[str, str]) -> str:
+    """Replace in-body occurrences of `word<digit>` with `word[^digit]`.
+
+    Conservative: only rewrites digits attached to a word character and
+    only for markers we've resolved (have definitions for).  Never rewrites
+    inside code fences or tables (simple detection: skip lines starting with
+    `|`, `    `, or inside triple-backtick blocks).
+    """
+    if not notes:
+        return markdown
+
+    # Sort markers by length descending so "10" matches before "1"
+    markers = sorted(notes.keys(), key=lambda s: -len(s))
+    # Rewrite ONLY when the marker is attached to the end of a word that
+    # ends in a lowercase letter or closing punctuation — this avoids
+    # false-positives on label codes like "B4", "CU15", "SB-FRS 102",
+    # "IG5C", which pair uppercase letters (or hyphens) with digits.
+    pattern = re.compile(
+        r"(?<=[a-z\)\]\.\,])(" + "|".join(re.escape(m) for m in markers) + r")(?![0-9A-Za-z])"
+    )
+
+    out_lines: List[str] = []
+    in_code = False
+    for ln in markdown.splitlines():
+        stripped = ln.lstrip()
+        if stripped.startswith("```"):
+            in_code = not in_code
+            out_lines.append(ln)
+            continue
+        if in_code or ln.startswith("    ") or stripped.startswith("|"):
+            out_lines.append(ln)
+            continue
+        out_lines.append(pattern.sub(lambda m: f"[^{m.group(1)}]", ln))
+
+    return "\n".join(out_lines)
+
+
+FOOTNOTES_SENTINEL = "<!-- ========== FOOTNOTES ========== -->"
+
+
+def _append_footnotes_section(markdown: str, notes: Dict[str, str], order: List[str]) -> str:
+    """Append a `[^N]: ...` definitions block. Inserted *before* the figures
+    sentinel if present, so footnotes stay near body text."""
+    if not notes:
+        return markdown
+
+    # Strip leading marker digit from each definition text (e.g. "2 The title…"
+    # → "The title…") since the `[^2]:` prefix carries that info already.
+    lines = [FOOTNOTES_SENTINEL, ""]
+    for m in order:
+        if m not in notes:
+            continue
+        defn = notes[m]
+        # Remove leading "2 " or "2." if present
+        defn = re.sub(r"^" + re.escape(m) + r"[.\s]+", "", defn).strip()
+        lines.append(f"[^{m}]: {defn}")
+    lines.append("")
+    footnotes_block = "\n".join(lines)
+
+    # Place before figures sentinel if present
+    if FIGURES_SENTINEL in markdown:
+        return markdown.replace(
+            FIGURES_SENTINEL,
+            footnotes_block + "\n" + FIGURES_SENTINEL,
+            1,
+        )
+    return markdown.rstrip() + "\n\n" + footnotes_block
+
+
+def _apply_post_processing(markdown: str, content: bytes, warnings: List[str]) -> str:
+    """Run all three cleanup passes in order. Failures are non-fatal:
+    each pass catches its own exceptions, appends a warning, and passes
+    the markdown through unchanged."""
+    # 1. Strip repeating headers/footers + bare page numbers
+    try:
+        markdown, stripped = _strip_repeating_headers_footers(markdown, content)
+        if stripped:
+            logger.info(f"post-process: stripped {stripped} header/footer line(s)")
+    except Exception as e:
+        warnings.append(f"post-process: header/footer strip failed — {e}")
+        logger.warning(f"header/footer strip failed: {e}", exc_info=True)
+
+    # 2. Drop TOC sections
+    try:
+        markdown, toc_count = _strip_toc_sections(markdown)
+        if toc_count:
+            logger.info(f"post-process: dropped {toc_count} TOC section(s)")
+    except Exception as e:
+        warnings.append(f"post-process: TOC strip failed — {e}")
+        logger.warning(f"TOC strip failed: {e}", exc_info=True)
+
+    # 3. Extract + rewrite footnotes
+    try:
+        notes, order = _collect_footnotes(content)
+        if notes:
+            markdown = _rewrite_footnote_markers(markdown, notes)
+            markdown = _append_footnotes_section(markdown, notes, order)
+            logger.info(f"post-process: lifted {len(notes)} footnote(s)")
+    except Exception as e:
+        warnings.append(f"post-process: footnote extraction failed — {e}")
+        logger.warning(f"footnote extraction failed: {e}", exc_info=True)
+
+    return markdown
+
+
 # ---------------------------------------------------------------------------
 # Stage 2: font-size clustering for heading inference
 # ---------------------------------------------------------------------------
@@ -791,6 +1555,8 @@ def _convert_single_heuristic(content: bytes, filename: str) -> Tuple[str, List[
                 md_parts.append("")
 
         markdown = _cleanup_markdown("\n".join(md_parts))
+        # Post-processing cleanup (headers/footers, TOC, footnotes)
+        markdown = _apply_post_processing(markdown, content, warnings)
         return markdown, figure_payload, page_stats, level_info, warnings
 
     finally:
@@ -1045,6 +1811,10 @@ def _convert_single_docling(content: bytes, filename: str) -> Tuple[str, List[di
 
     # Markdown straight from Docling's exporter.
     markdown = result.document.export_to_markdown() or ""
+
+    # --- Post-processing cleanup (headers/footers, TOC, footnotes) ---
+    # Applied before figure injection so figure placeholders are preserved.
+    markdown = _apply_post_processing(markdown, content, warnings)
 
     # --- Figures: walk the document, grab PictureItem images as PNG ---
     stem = re.sub(r"\.pdf$", "", filename, flags=re.I) or "doc"
