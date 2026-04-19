@@ -29,16 +29,41 @@ docker compose up -d
 
 Access at `http://localhost:3020`
 
+### GPU acceleration (optional)
+
+The image ships with CUDA-enabled PyTorch and auto-detects the GPU at startup. Hosts without a GPU fall back to CPU transparently. To grant the container GPU access, add this to the `textgrab` service in `docker-compose.yml`:
+
+```yaml
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+```
+
+Prerequisites on the host: NVIDIA drivers + `nvidia-container-toolkit`. Expected speedup: ~5–10× for layout/OCR inference.
+
+### Long-running conversions
+
+PDFs larger than 5 pages (or 2 MB) are auto-routed to a background queue so the request isn't held open during inference. The UI polls for completion and shows a "Recent jobs" panel for results. Jobs are persisted in SQLite and retained for 7 days. Single-worker by design (prevents GPU OOM).
+
 ## API
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/text` | POST | Text extraction with scheme transform |
+| `/api/text` | POST | Text extraction with scheme transform (synchronous) |
+| `/api/text/stream` | POST | Same, with SSE progress events; auto-routes large jobs to queue |
+| `/api/jobs` | POST | Submit a scheme transform as a background job |
+| `/api/jobs` | GET | List recent jobs |
+| `/api/jobs/{id}` | GET | Fetch a job's status and result |
 | `/api/schemes` | GET | List available schemes |
 | `/api/tabular/extract` | POST | Structured extraction (text + tables) |
 | `/api/tabular/convert` | POST | Bank statement PDF to CSV |
 | `/api/tabular/convert-bulk` | POST | Multiple PDFs to merged CSV |
 | `/api/templates` | GET | List tabular parser templates |
+| `/api/version` | GET | Service version info |
 | `/api/extract` | POST | Legacy — redirects to /api/text |
 | `/api/convert` | POST | Legacy — redirects to /api/tabular/convert |
 

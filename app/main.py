@@ -2,14 +2,14 @@ import io
 import csv
 import os
 import logging
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 
 import json
 import asyncio
 
 from fastapi import FastAPI, UploadFile, File, Form, Body, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import Response
 
@@ -24,12 +24,16 @@ from .parsers import get_templates, get_parser, auto_detect
 from .parsers.generic import detect_financial_table, parse_financial_table
 from .parsers.helpers import extract_year_from_pdf
 from .schemes import get_schemes, get_scheme
+from .jobs import (
+    JobStore, SYNC_PAGE_THRESHOLD, SYNC_SIZE_THRESHOLD_BYTES,
+)
+from .worker import worker_loop, cleanup_loop, analyse_inputs
 
 log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="textgrab",
-    version="4.4.0",
+    version="4.5.0",
     description="Text extraction + tabular data conversion",
     docs_url="/docs",
     redoc_url=None,
@@ -38,6 +42,46 @@ app = FastAPI(
 
 UPLOAD_DIR = "/tmp/textgrab_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# ===================================================================
+# Job queue (4.5.0)
+# ===================================================================
+# DB lives in the mounted data volume so it survives container restarts.
+# Falls back to a writable path if the mount is missing (e.g. local dev).
+_JOB_DB_CANDIDATES = [
+    "/data/models/textgrab_jobs.sqlite",
+    "/tmp/textgrab_jobs.sqlite",
+]
+_JOB_DB_PATH = next(
+    (p for p in _JOB_DB_CANDIDATES
+     if os.path.isdir(os.path.dirname(p)) or os.access(os.path.dirname(p) or ".", os.W_OK)),
+    _JOB_DB_CANDIDATES[-1],
+)
+job_store = JobStore(_JOB_DB_PATH)
+job_store.requeue_stuck_running_jobs()
+
+_worker_stop = asyncio.Event()
+_worker_task: Optional[asyncio.Task] = None
+_cleanup_task: Optional[asyncio.Task] = None
+
+
+@app.on_event("startup")
+async def _start_worker():
+    global _worker_task, _cleanup_task
+    _worker_task = asyncio.create_task(worker_loop(job_store, _worker_stop))
+    _cleanup_task = asyncio.create_task(cleanup_loop(job_store, _worker_stop))
+    log.info("job worker + cleanup tasks started")
+
+
+@app.on_event("shutdown")
+async def _stop_worker():
+    _worker_stop.set()
+    for t in (_worker_task, _cleanup_task):
+        if t is not None:
+            try:
+                await asyncio.wait_for(t, timeout=10.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
 
 
 # ===================================================================
@@ -191,6 +235,50 @@ async def text_extract_stream(
         content = await f.read()
         file_data.append((f.filename, content))
 
+    # --- 4.5.0 — auto-route big jobs to the background queue ---
+    # Small PDFs keep the existing streaming sync behaviour (snappy UX).
+    # Big ones are submitted as jobs and the client pivots to polling.
+    if scheme != "raw":
+        scheme_mod_route = get_scheme(scheme)
+        # Quick page-count probe for the routing decision (PDFs only)
+        probe_pages = None
+        if scheme == "pdf2md" and file_data:
+            inputs_dict = {fn: c for fn, c in file_data}
+            probe_pages, _ = await asyncio.to_thread(analyse_inputs, scheme, inputs_dict)
+        if _should_route_to_queue(scheme, scheme_mod_route, file_data, probe_pages):
+            inputs_dict = {fn: c for fn, c in file_data}
+            page_count, ocr_expected = await asyncio.to_thread(
+                analyse_inputs, scheme, inputs_dict,
+            )
+            eta = await asyncio.to_thread(
+                job_store.compute_eta, page_count, ocr_expected,
+            )
+            job = await asyncio.to_thread(
+                job_store.submit,
+                scheme=scheme, output_mode=output_mode, inputs=inputs_dict,
+                page_count=page_count or None, ocr_expected=ocr_expected,
+                estimate_sec=eta,
+            )
+            pos = await asyncio.to_thread(job_store.queue_position, job.id)
+
+            async def _queued_response():
+                payload = {
+                    "type": "job_queued",
+                    **job.to_public_dict(include_result=False),
+                    "queue_position": pos,
+                }
+                yield f"data: {json.dumps(payload)}\n\n"
+
+            return StreamingResponse(
+                _queued_response(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+
     async def event_stream():
         total = len(file_data)
         extracted = {}
@@ -328,6 +416,104 @@ async def text_extract_stream(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ===================================================================
+# Jobs API (4.5.0) — async endpoint for long-running scheme transforms
+# ===================================================================
+def _should_route_to_queue(
+    scheme: str,
+    scheme_mod,
+    file_data: list,
+    page_count: Optional[int],
+) -> bool:
+    """Decide whether to run sync-inline or submit to the async queue.
+
+    Rules (in order):
+      - scheme == 'raw' → always sync (no heavy compute involved)
+      - any file > SYNC_SIZE_THRESHOLD_BYTES → async
+      - page_count > SYNC_PAGE_THRESHOLD → async
+      - otherwise sync
+    """
+    if scheme == "raw":
+        return False
+    total_bytes = sum(len(c) for _, c in file_data)
+    if total_bytes > SYNC_SIZE_THRESHOLD_BYTES:
+        return True
+    if page_count is not None and page_count > SYNC_PAGE_THRESHOLD:
+        return True
+    return False
+
+
+@app.post("/api/jobs")
+async def submit_job(
+    files: List[UploadFile] = File(...),
+    scheme: str = Form(...),
+    output_mode: str = Form("consolidated"),
+):
+    """Submit a scheme transform as a background job. Returns a job record
+    with a time estimate and no result — the client polls /api/jobs/{id}
+    for completion."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+    schemes = get_schemes()
+    if scheme not in schemes or scheme == "raw":
+        raise HTTPException(status_code=400,
+                            detail=f"Scheme '{scheme}' is not a background-job scheme")
+
+    scheme_mod = get_scheme(scheme)
+    if scheme_mod is None:
+        raise HTTPException(status_code=400, detail=f"Scheme '{scheme}' not found")
+
+    # Read all files (we need the bytes anyway for the job blob)
+    inputs: Dict[str, bytes] = {}
+    for f in files:
+        content = await f.read()
+        ext = os.path.splitext(f.filename)[-1].lower()
+        if ext not in scheme_mod.ACCEPTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File '{f.filename}' ({ext}) not accepted by scheme '{scheme}'. "
+                       f"Accepted: {scheme_mod.ACCEPTS}",
+            )
+        inputs[f.filename] = content
+
+    # Analyse for ETA
+    page_count, ocr_expected = await asyncio.to_thread(analyse_inputs, scheme, inputs)
+    eta = await asyncio.to_thread(job_store.compute_eta, page_count, ocr_expected)
+
+    job = await asyncio.to_thread(
+        job_store.submit,
+        scheme=scheme, output_mode=output_mode, inputs=inputs,
+        page_count=page_count or None, ocr_expected=ocr_expected,
+        estimate_sec=eta,
+    )
+    pos = await asyncio.to_thread(job_store.queue_position, job.id)
+    return {
+        **job.to_public_dict(include_result=False),
+        "queue_position": pos,
+    }
+
+
+@app.get("/api/jobs/{job_id}")
+async def get_job(job_id: str, include_result: bool = True):
+    job = await asyncio.to_thread(job_store.get, job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    pos = await asyncio.to_thread(job_store.queue_position, job.id)
+    return {
+        **job.to_public_dict(include_result=include_result),
+        "queue_position": pos,
+    }
+
+
+@app.get("/api/jobs")
+async def list_jobs(limit: int = 20):
+    limit = max(1, min(100, int(limit)))
+    jobs = await asyncio.to_thread(job_store.list_recent, limit)
+    return {
+        "jobs": [j.to_public_dict(include_result=False) for j in jobs],
+    }
 
 
 # ===================================================================
@@ -603,7 +789,7 @@ def health():
 def version():
     return {
         "service": "textgrab",
-        "version": "4.4.0",
+        "version": "4.5.0",
     }
 
 

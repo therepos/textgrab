@@ -254,6 +254,71 @@
   .result-md a { color: var(--accent); text-decoration: none; }
   .result-md a:hover { text-decoration: underline; }
 
+  /* Recent Jobs panel (4.5.0) */
+  .jobs-panel {
+    margin-top: 16px; margin-bottom: 8px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); overflow: hidden;
+  }
+  .jobs-panel-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; cursor: pointer; user-select: none;
+    border-bottom: 1px solid transparent;
+  }
+  .jobs-panel.expanded .jobs-panel-header { border-bottom-color: var(--border); }
+  .jobs-panel-header h4 {
+    font-size: 0.82rem; font-weight: 500; color: var(--text-dim);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .jobs-panel-header .chev { color: var(--text-dim); transition: transform 0.15s; }
+  .jobs-panel.expanded .jobs-panel-header .chev { transform: rotate(90deg); }
+  .jobs-panel-body { display: none; max-height: 340px; overflow-y: auto; }
+  .jobs-panel.expanded .jobs-panel-body { display: block; }
+  .jobs-empty { padding: 14px; font-size: 0.8rem; color: var(--text-dim); text-align: center; }
+  .job-row {
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+    cursor: pointer; transition: background 0.1s;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .job-row:last-child { border-bottom: none; }
+  .job-row:hover { background: var(--surface-hover); }
+  .job-row .top {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; font-size: 0.82rem;
+  }
+  .job-row .fname {
+    font-family: 'IBM Plex Mono', monospace; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+  }
+  .job-row .meta { font-size: 0.72rem; color: var(--text-dim); }
+  .job-status {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    font-size: 0.68rem; font-weight: 600; letter-spacing: 0.02em;
+  }
+  .job-status.queued  { background: rgba(148,163,184,0.15); color: var(--text-dim); }
+  .job-status.running { background: var(--accent-dim); color: var(--accent); }
+  .job-status.done    { background: rgba(74,222,128,0.15); color: var(--green); }
+  .job-status.failed  { background: rgba(248,113,113,0.15); color: var(--red); }
+
+  /* Job-in-progress card (shown in place of the progress bar when a job
+     was queued rather than run synchronously) */
+  .job-active {
+    display: none; margin-top: 20px; padding: 16px 18px;
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface);
+  }
+  .job-active.visible { display: block; }
+  .job-active h4 { font-size: 0.88rem; font-weight: 500; color: var(--text); margin-bottom: 8px; }
+  .job-active .lines { font-size: 0.78rem; color: var(--text-dim); line-height: 1.7; }
+  .job-active .lines strong { color: var(--text); font-weight: 500; }
+  .job-active .spinner {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+    border: 2px solid var(--accent); border-right-color: transparent;
+    animation: spin 0.9s linear infinite; margin-right: 6px;
+    vertical-align: middle;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
 
 </style>
 <!-- Markdown rendering (4.1.0) -->
@@ -298,6 +363,27 @@
       </div>
     </div>
     <button class="submit-btn" id="btn-text" disabled onclick="doText()">Extract</button>
+
+    <!-- Recent Jobs (4.5.0) -->
+    <div class="jobs-panel" id="jobs-panel">
+      <div class="jobs-panel-header" onclick="toggleJobsPanel()">
+        <h4>
+          <span class="chev">›</span>
+          Recent jobs
+          <span id="jobs-count-badge" class="badge" style="display:none;"></span>
+        </h4>
+        <button style="background:none;border:none;color:var(--text-dim);font-size:0.72rem;cursor:pointer;padding:0;" onclick="event.stopPropagation(); refreshJobs(true);">Refresh</button>
+      </div>
+      <div class="jobs-panel-body" id="jobs-panel-body">
+        <div class="jobs-empty">Loading…</div>
+      </div>
+    </div>
+
+    <!-- In-progress job card (shown when a job was routed to the queue) -->
+    <div class="job-active" id="job-active">
+      <h4 id="job-active-title"><span class="spinner"></span> Converting in background…</h4>
+      <div class="lines" id="job-active-lines"></div>
+    </div>
 
     <div class="progress" id="prog-text">
       <div class="progress-bar"><div class="progress-bar-fill"></div></div>
@@ -367,7 +453,7 @@
 </div>
 
 <footer>
-  textgrab <span id="footer-version">v4.4.0</span> — all processing runs locally<br>
+  textgrab <span id="footer-version">v4.5.0</span> — all processing runs locally<br>
   <a href="https://github.com/therepos/textgrab" target="_blank" style="color: inherit; text-decoration: underline;">View on GitHub</a>
 </footer>
 
@@ -446,6 +532,290 @@
     } else {
       rendered.style.display = 'none'; source.style.display = '';
       btnS.classList.add('active'); btnR.classList.remove('active');
+    }
+  }
+
+  // ---------------------------------------------------------------
+  // Result rendering — extracted so both sync + async paths can share (4.5.0)
+  // ---------------------------------------------------------------
+  function renderSchemeResult(data) {
+    hide('err-text'); hide('res-text'); hide('res-text-files');
+    if (data.files && !data.text) {
+      const container = document.getElementById('res-text-files');
+      const figures = Array.isArray(data.figures) ? data.figures : [];
+      let html = '<div class="result-header"><h3>\u2713 Extraction complete</h3></div>';
+      data.files.forEach((f, i) => {
+        const isMd = isMarkdownOutput(f.filename);
+        let renderedBlock = '';
+        let toggleBlock   = '';
+        if (isMd) {
+          const mdWithImgs = inlineFigures(f.text || '', figures);
+          const renderedHtml = renderMarkdown(mdWithImgs);
+          if (renderedHtml !== null) {
+            renderedBlock = `<div class="result-md" id="rt-file-md-${i}">${renderedHtml}</div>`;
+            toggleBlock = `<div class="view-toggle" id="vt-file-${i}">
+              <button class="active" onclick="setFileView(${i}, 'rendered')">Rendered</button>
+              <button onclick="setFileView(${i}, 'source')">Source</button>
+            </div>`;
+          }
+        }
+        html += `<div class="file-result">
+          <div class="file-result-header">
+            <h4>\ud83d\udcc4 ${esc(f.filename)}</h4>
+            <div class="file-result-actions">
+              ${toggleBlock}
+              <button onclick="copyIndividual(${i})">Copy</button>
+              <button onclick="downloadIndividual(${i})">Download</button>
+            </div>
+          </div>
+          ${renderedBlock}
+          <div class="result-text" id="rt-file-src-${i}" ${renderedBlock ? 'style="display:none;"' : ''}>${esc(f.text)}</div>
+        </div>`;
+      });
+      if (data.glossary) {
+        html += `<div class="file-result">
+          <div class="file-result-header">
+            <h4>\ud83d\udccb Glossary</h4>
+            <div class="file-result-actions">
+              <button onclick="copyGlossary()">Copy</button>
+            </div>
+          </div>
+          <div class="result-text">${esc(data.glossary)}</div>
+        </div>`;
+        state.text.glossary = data.glossary;
+      }
+      container.innerHTML = html;
+      state.text.individualFiles = data.files;
+      show('res-text-files');
+      return;
+    }
+    // Consolidated / single file
+    const srcText = data.text || '';
+    const figures = Array.isArray(data.figures) ? data.figures : [];
+    document.getElementById('rt-text').textContent = srcText;
+    state.text.result = srcText;
+    state.text.resultName = data.filename || 'extracted';
+    state.text.figures = figures;
+
+    const isMd = isMarkdownOutput(data.filename);
+    state.text.isMarkdown = isMd;
+    const toggle = document.getElementById('view-toggle-text');
+    const mdEl  = document.getElementById('rt-text-md');
+    if (isMd) {
+      const mdWithImgs = inlineFigures(srcText, figures);
+      const html = renderMarkdown(mdWithImgs);
+      if (html !== null) {
+        mdEl.innerHTML = html;
+        toggle.style.display = '';
+        setTextView(state.text.viewMode || 'rendered');
+      } else {
+        toggle.style.display = 'none';
+        mdEl.style.display = 'none';
+        document.getElementById('rt-text').style.display = '';
+      }
+    } else {
+      toggle.style.display = 'none';
+      mdEl.style.display = 'none';
+      document.getElementById('rt-text').style.display = '';
+    }
+
+    const statsEl = document.getElementById('res-text-stats');
+    if (data.stats && Array.isArray(data.stats)) {
+      statsEl.textContent = data.stats.join(' \u2022 ');
+      statsEl.style.display = 'block';
+    } else if (data.total_entries) {
+      statsEl.textContent = `${data.total_entries} glossary entries`;
+      statsEl.style.display = 'block';
+    } else {
+      statsEl.style.display = 'none';
+    }
+
+    const title = document.getElementById('res-text-title');
+    title.innerHTML = '\u2713 Extraction complete';
+    if (data.total_entries) {
+      title.innerHTML += ` <span class="badge">${data.total_entries} entries</span>`;
+    }
+    show('res-text');
+  }
+
+  // ---------------------------------------------------------------
+  // Background jobs (4.5.0)
+  // ---------------------------------------------------------------
+  const jobsState = {
+    activePollId: null,      // the job currently being polled live
+    pollTimer: null,
+    knownJobs: [],           // last fetched list
+  };
+
+  function fmtDuration(sec) {
+    if (sec == null || isNaN(sec)) return '—';
+    if (sec < 60) return `${Math.round(sec)}s`;
+    if (sec < 3600) return `${Math.floor(sec/60)}m ${Math.round(sec%60)}s`;
+    return `${Math.floor(sec/3600)}h ${Math.round((sec%3600)/60)}m`;
+  }
+
+  function fmtAge(epochSec) {
+    if (!epochSec) return '—';
+    const age = (Date.now() / 1000) - epochSec;
+    if (age < 60) return 'just now';
+    if (age < 3600) return `${Math.floor(age/60)}m ago`;
+    if (age < 86400) return `${Math.floor(age/3600)}h ago`;
+    return `${Math.floor(age/86400)}d ago`;
+  }
+
+  function toggleJobsPanel() {
+    document.getElementById('jobs-panel').classList.toggle('expanded');
+  }
+
+  async function refreshJobs(expandOnLoad = false) {
+    try {
+      const res = await fetch('/api/jobs?limit=20');
+      if (!res.ok) return;
+      const data = await res.json();
+      jobsState.knownJobs = data.jobs || [];
+      renderJobsList();
+      if (expandOnLoad && jobsState.knownJobs.length) {
+        document.getElementById('jobs-panel').classList.add('expanded');
+      }
+    } catch (_) {}
+  }
+
+  function renderJobsList() {
+    const body = document.getElementById('jobs-panel-body');
+    const badge = document.getElementById('jobs-count-badge');
+    const jobs = jobsState.knownJobs;
+    const activeCount = jobs.filter(j => j.status === 'queued' || j.status === 'running').length;
+    if (activeCount) {
+      badge.textContent = activeCount + ' active';
+      badge.style.display = '';
+    } else {
+      badge.style.display = 'none';
+    }
+    if (!jobs.length) {
+      body.innerHTML = '<div class="jobs-empty">No jobs yet. Large PDFs run in the background.</div>';
+      return;
+    }
+    let html = '';
+    for (const j of jobs) {
+      const primary = j.source_filenames.length === 1
+        ? j.source_filenames[0]
+        : `${j.source_filenames.length} files`;
+      let meta = '';
+      if (j.status === 'queued') {
+        meta = `queued • position ${j.queue_position || '?'} • ETA ~${fmtDuration(j.estimate_sec)}`;
+      } else if (j.status === 'running') {
+        meta = `running • ${fmtDuration(j.elapsed_sec)} / ~${fmtDuration(j.estimate_sec)}`;
+      } else if (j.status === 'done') {
+        const dur = (j.finished_at && j.started_at) ? (j.finished_at - j.started_at) : null;
+        meta = `${fmtAge(j.finished_at)} • took ${fmtDuration(dur)}` +
+               (j.engine_used ? ` • ${j.engine_used}` : '');
+      } else if (j.status === 'failed') {
+        meta = `${fmtAge(j.finished_at)} • ${esc((j.error_detail||'').slice(0,60))}`;
+      }
+      html += `<div class="job-row" onclick="openJob('${j.id}')">
+        <div class="top">
+          <span class="fname">${esc(primary)}</span>
+          <span class="job-status ${j.status}">${j.status}</span>
+        </div>
+        <div class="meta">${meta}</div>
+      </div>`;
+    }
+    body.innerHTML = html;
+  }
+
+  function showActiveJob(job) {
+    const el = document.getElementById('job-active');
+    const lines = document.getElementById('job-active-lines');
+    const title = document.getElementById('job-active-title');
+    let remaining = null;
+    if (job.estimate_sec != null && job.elapsed_sec != null) {
+      remaining = Math.max(0, job.estimate_sec - job.elapsed_sec);
+    }
+    const parts = [];
+    if (job.status === 'queued') {
+      title.innerHTML = `<span class="spinner"></span> Waiting in queue…`;
+      parts.push(`<strong>Position:</strong> ${job.queue_position || '?'}`);
+      if (job.estimate_sec != null) parts.push(`<strong>ETA once running:</strong> ~${fmtDuration(job.estimate_sec)}`);
+    } else if (job.status === 'running') {
+      title.innerHTML = `<span class="spinner"></span> Converting in background…`;
+      parts.push(`<strong>Elapsed:</strong> ${fmtDuration(job.elapsed_sec)}`);
+      if (job.estimate_sec != null) {
+        parts.push(`<strong>Estimated total:</strong> ~${fmtDuration(job.estimate_sec)}`);
+        if (remaining != null) parts.push(`<strong>Remaining (est):</strong> ~${fmtDuration(remaining)}`);
+      }
+    }
+    if (job.page_count) parts.push(`<strong>Pages:</strong> ${job.page_count}${job.ocr_expected ? ' (OCR expected)' : ''}`);
+    parts.push(`<em style="opacity:0.7;">You can close this tab — the job will keep running. Come back and it'll be in Recent jobs.</em>`);
+    lines.innerHTML = parts.join('<br>');
+    el.classList.add('visible');
+  }
+
+  function hideActiveJob() {
+    document.getElementById('job-active').classList.remove('visible');
+  }
+
+  async function pollJob(jobId) {
+    if (jobsState.activePollId !== jobId) return;  // superseded
+    try {
+      const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}?include_result=true`);
+      if (!res.ok) {
+        if (res.status === 404) {
+          showError('err-text', 'Job disappeared');
+          hideActiveJob();
+          jobsState.activePollId = null;
+          return;
+        }
+        throw new Error(`poll HTTP ${res.status}`);
+      }
+      const job = await res.json();
+      // Update the in-progress card
+      if (job.status === 'queued' || job.status === 'running') {
+        showActiveJob(job);
+        jobsState.pollTimer = setTimeout(() => pollJob(jobId), 2000);
+      } else if (job.status === 'done') {
+        hideActiveJob();
+        jobsState.activePollId = null;
+        renderSchemeResult(job.result || {});
+        refreshJobs();
+      } else if (job.status === 'failed') {
+        hideActiveJob();
+        jobsState.activePollId = null;
+        showError('err-text', `Conversion failed: ${job.error_detail || 'unknown error'}`);
+        refreshJobs();
+      }
+    } catch (e) {
+      // Transient error — retry a few times then give up
+      console.warn('poll error:', e);
+      jobsState.pollTimer = setTimeout(() => pollJob(jobId), 5000);
+    }
+  }
+
+  function startPollingJob(job) {
+    // Stop any prior poll
+    if (jobsState.pollTimer) clearTimeout(jobsState.pollTimer);
+    jobsState.activePollId = job.id;
+    showActiveJob(job);
+    jobsState.pollTimer = setTimeout(() => pollJob(job.id), 500);
+    refreshJobs();
+  }
+
+  async function openJob(jobId) {
+    try {
+      const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}?include_result=true`);
+      if (!res.ok) return;
+      const job = await res.json();
+      if (job.status === 'queued' || job.status === 'running') {
+        // Resume live tracking
+        startPollingJob(job);
+      } else if (job.status === 'done') {
+        hideActiveJob();
+        renderSchemeResult(job.result || {});
+      } else if (job.status === 'failed') {
+        hideActiveJob();
+        showError('err-text', `This job failed: ${job.error_detail || 'unknown error'}`);
+      }
+    } catch (e) {
+      showError('err-text', `Could not load job: ${e.message}`);
     }
   }
 
@@ -631,6 +1001,11 @@
                 throw new Error(msg.detail);
               } else if (msg.type === 'result') {
                 data = msg;
+              } else if (msg.type === 'job_queued') {
+                // Server decided this input is too big for a single HTTP
+                // round-trip and queued it as a background job. Pivot to
+                // polling. Nothing more will arrive on this stream.
+                data = { __queued: true, job: msg };
               }
             } catch (e) {
               if (e.message && !e.message.includes('JSON')) throw e;
@@ -641,108 +1016,15 @@
 
       if (!data) throw new Error('No result received from server');
 
-      // Individual files mode
-      if (data.files && !data.text) {
-        const container = document.getElementById('res-text-files');
-        const figures = Array.isArray(data.figures) ? data.figures : [];
-        let html = '<div class="result-header"><h3>\u2713 Extraction complete</h3></div>';
-        data.files.forEach((f, i) => {
-          const isMd = isMarkdownOutput(f.filename);
-          let renderedBlock = '';
-          let toggleBlock   = '';
-          if (isMd) {
-            const mdWithImgs = inlineFigures(f.text || '', figures);
-            const renderedHtml = renderMarkdown(mdWithImgs);
-            if (renderedHtml !== null) {
-              renderedBlock = `<div class="result-md" id="rt-file-md-${i}">${renderedHtml}</div>`;
-              toggleBlock = `<div class="view-toggle" id="vt-file-${i}">
-                <button class="active" onclick="setFileView(${i}, 'rendered')">Rendered</button>
-                <button onclick="setFileView(${i}, 'source')">Source</button>
-              </div>`;
-            }
-          }
-          html += `<div class="file-result">
-            <div class="file-result-header">
-              <h4>\ud83d\udcc4 ${esc(f.filename)}</h4>
-              <div class="file-result-actions">
-                ${toggleBlock}
-                <button onclick="copyIndividual(${i})">Copy</button>
-                <button onclick="downloadIndividual(${i})">Download</button>
-              </div>
-            </div>
-            ${renderedBlock}
-            <div class="result-text" id="rt-file-src-${i}" ${renderedBlock ? 'style="display:none;"' : ''}>${esc(f.text)}</div>
-          </div>`;
-        });
-        if (data.glossary) {
-          html += `<div class="file-result">
-            <div class="file-result-header">
-              <h4>\ud83d\udccb Glossary</h4>
-              <div class="file-result-actions">
-                <button onclick="copyGlossary()">Copy</button>
-              </div>
-            </div>
-            <div class="result-text">${esc(data.glossary)}</div>
-          </div>`;
-          state.text.glossary = data.glossary;
-        }
-        container.innerHTML = html;
-        state.text.individualFiles = data.files;
-        show('res-text-files');
-      } else {
-        // Consolidated / single file
-        const srcText = data.text || '';
-        const figures = Array.isArray(data.figures) ? data.figures : [];
-        document.getElementById('rt-text').textContent = srcText;
-        state.text.result = srcText;
-        state.text.resultName = data.filename || 'extracted';
-        state.text.figures = figures;
-
-        // Rendered-Markdown pane (4.1.0) — only when output is .md-shaped
-        const isMd = isMarkdownOutput(data.filename);
-        state.text.isMarkdown = isMd;
-        const toggle = document.getElementById('view-toggle-text');
-        const mdEl  = document.getElementById('rt-text-md');
-        if (isMd) {
-          const mdWithImgs = inlineFigures(srcText, figures);
-          const html = renderMarkdown(mdWithImgs);
-          if (html !== null) {
-            mdEl.innerHTML = html;
-            toggle.style.display = '';
-            setTextView(state.text.viewMode || 'rendered');
-          } else {
-            // Libs didn't load — fall back to source only
-            toggle.style.display = 'none';
-            mdEl.style.display = 'none';
-            document.getElementById('rt-text').style.display = '';
-          }
-        } else {
-          toggle.style.display = 'none';
-          mdEl.style.display = 'none';
-          document.getElementById('rt-text').style.display = '';
-        }
-
-        // Stats
-        const statsEl = document.getElementById('res-text-stats');
-        if (data.stats && Array.isArray(data.stats)) {
-          statsEl.textContent = data.stats.join(' \u2022 ');
-          statsEl.style.display = 'block';
-        } else if (data.total_entries) {
-          statsEl.textContent = `${data.total_entries} glossary entries`;
-          statsEl.style.display = 'block';
-        } else {
-          statsEl.style.display = 'none';
-        }
-
-        // Title
-        const title = document.getElementById('res-text-title');
-        title.innerHTML = '\u2713 Extraction complete';
-        if (data.total_entries) {
-          title.innerHTML += ` <span class="badge">${data.total_entries} entries</span>`;
-        }
-
-        show('res-text');
+      // Case A: backend queued this as a background job — pivot to polling.
+      if (data.__queued) {
+        hide('prog-text');
+        startPollingJob(data.job);
+        return;  // finally-block resets button etc.
       }
+
+      // Case B: synchronous result — render it directly.
+      renderSchemeResult(data);
     } catch (e) {
       showError('err-text', e.message);
     } finally {
@@ -983,6 +1265,13 @@
     const el = document.getElementById('footer-version');
     if (el && v && v.version) el.textContent = 'v' + v.version;
   }).catch(() => {});
+
+  // Recent jobs panel (4.5.0) — populate on page load; expand if there
+  // are any active or recently-completed jobs worth showing.
+  refreshJobs(false);
+  // Re-poll every 15s in case something was submitted from another tab
+  // and completes while this tab is open.
+  setInterval(() => { refreshJobs(false); }, 15000);
 </script>
 </body>
 </html>

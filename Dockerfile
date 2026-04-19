@@ -13,9 +13,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt ./
 
-# Install Python deps with CPU-only PyTorch
+# Install Python deps with CUDA-enabled PyTorch (cu124).
+# Runtime auto-detects GPU; CPU-only hosts still work because
+# torch.cuda.is_available() returns False and we fall back to CPU.
+# Image is ~1.5 GB larger than the CPU-only build.
 RUN pip install --no-cache-dir \
-    --extra-index-url https://download.pytorch.org/whl/cpu \
+    --extra-index-url https://download.pytorch.org/whl/cu124 \
     -r requirements.txt
 
 # Pre-download doctr models into a known location

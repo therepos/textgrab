@@ -880,13 +880,37 @@ _DOCLING_INIT_ERROR: Optional[str] = None  # non-None means init failed permanen
 # Tunables
 DOCLING_IMAGES_SCALE = 1.5           # 1.5 ~ 108 DPI for figure crops — sharpness sufficient for previews, ~2x faster raster than 2.0
 DOCLING_MAX_FIGURES_PER_DOC = 200    # cap to bound memory
-DOCLING_MAX_PAGES = 200              # soft cap; past this, Docling is told to stop and we fall back
+DOCLING_MAX_PAGES = 500              # soft cap; past this, Docling is told to stop and we fall back
 DOCLING_OCR_LANGS = ["en"]           # EasyOCR language codes
 
 # 4.4.0 — figure noise filter (logos, watermarks, decorative elements)
 FIGURE_MIN_PIXEL_AREA = 64 * 64      # drop figures smaller than this (64x64)
 FIGURE_DEDUP_MIN_OCCURRENCES = 3     # perceptual-hash matches on >=3 pages → treated as repeated noise
 FIGURE_PHASH_SIZE = 16               # perceptual hash grid (16x16 = 256 bits; robust to minor variations)
+
+
+def _detect_device() -> str:
+    """Return 'cuda' if a working GPU is available, else 'cpu'.
+
+    Called once at converter init. Docling's AcceleratorOptions respects
+    the returned string. EasyOCR's use_gpu flag mirrors it.
+    """
+    try:
+        import torch
+        if torch.cuda.is_available():
+            try:
+                # Some drivers report is_available() True but fail on actual use.
+                # A cheap probe catches this.
+                torch.zeros(1).cuda()
+                logger.info("GPU detected: %s", torch.cuda.get_device_name(0))
+                return "cuda"
+            except Exception as e:
+                logger.warning(f"GPU present but unusable, falling back to CPU: {e}")
+                return "cpu"
+    except Exception:
+        pass
+    logger.info("No GPU available — running on CPU")
+    return "cpu"
 
 
 def _build_docling_converter():
@@ -905,6 +929,12 @@ def _build_docling_converter():
         from docling.datamodel.pipeline_options import (
             PdfPipelineOptions, EasyOcrOptions,
         )
+        from docling.datamodel.accelerator_options import (
+            AcceleratorOptions, AcceleratorDevice,
+        )
+        device_str = _detect_device()
+        device_enum = (AcceleratorDevice.CUDA if device_str == "cuda"
+                       else AcceleratorDevice.CPU)
         opts = PdfPipelineOptions(
             generate_picture_images=True,
             images_scale=DOCLING_IMAGES_SCALE,
@@ -912,13 +942,14 @@ def _build_docling_converter():
             do_table_structure=True,
             ocr_options=EasyOcrOptions(
                 lang=DOCLING_OCR_LANGS,
-                use_gpu=False,
+                use_gpu=(device_str == "cuda"),
             ),
+            accelerator_options=AcceleratorOptions(device=device_enum),
         )
         _DOCLING_CONVERTER = DocumentConverter(
             format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)},
         )
-        logger.info("Docling DocumentConverter initialised")
+        logger.info("Docling DocumentConverter initialised (device=%s)", device_str)
         return _DOCLING_CONVERTER, None
     except Exception as e:
         msg = f"Docling init failed: {type(e).__name__}: {e}"
