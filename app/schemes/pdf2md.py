@@ -883,6 +883,11 @@ DOCLING_MAX_FIGURES_PER_DOC = 200    # cap to bound memory
 DOCLING_MAX_PAGES = 200              # soft cap; past this, Docling is told to stop and we fall back
 DOCLING_OCR_LANGS = ["en"]           # EasyOCR language codes
 
+# 4.4.0 — figure noise filter (logos, watermarks, decorative elements)
+FIGURE_MIN_PIXEL_AREA = 64 * 64      # drop figures smaller than this (64x64)
+FIGURE_DEDUP_MIN_OCCURRENCES = 3     # perceptual-hash matches on >=3 pages → treated as repeated noise
+FIGURE_PHASH_SIZE = 16               # perceptual hash grid (16x16 = 256 bits; robust to minor variations)
+
 
 def _build_docling_converter():
     """Lazy-construct the singleton DocumentConverter.
@@ -1015,11 +1020,18 @@ def _convert_single_docling(content: bytes, filename: str) -> Tuple[str, List[di
     stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem)
 
     figures: List[dict] = []
-    figure_filenames_in_order: List[str] = []  # for placeholder substitution
+    figure_filenames_in_order: List[str] = []  # for placeholder substitution; None = filtered
     per_page_figures: Dict[int, int] = {}
     per_page_tables: Dict[int, int] = {}
 
+    # 4.4.0 — two-pass: collect candidates (with PIL image + phash), filter,
+    # then emit. Filter criteria:
+    #   (a) too-small figures (likely icons/ornaments) — pixel area threshold
+    #   (b) repeated across pages (likely logos/watermarks) — phash dedupe
+    candidates = []  # list of dicts: {pic_idx, page_no, img, phash, area}
     pic_idx = 0
+    filtered_small = 0
+
     for element, _level in result.document.iterate_items():
         if isinstance(element, PictureItem):
             pic_idx += 1
@@ -1027,38 +1039,43 @@ def _convert_single_docling(content: bytes, filename: str) -> Tuple[str, List[di
                 warnings.append(
                     f"{filename}: figure cap hit ({DOCLING_MAX_FIGURES_PER_DOC}); remaining figures not extracted"
                 )
-                break
-            # Determine page
+                # Still emit placeholder slots (as filtered) so the body
+                # markdown lines up — we don't want Nth placeholder to
+                # suddenly refer to a figure we never recorded.
+                figure_filenames_in_order.append(None)
+                continue
+
             page_no = 0
             if element.prov:
                 page_no = getattr(element.prov[0], "page_no", 0) or 0
-            per_page_figures[page_no] = per_page_figures.get(page_no, 0) + 1
 
-            fig_filename = f"figure-{pic_idx}-p{page_no}-{stem}.png"
             try:
                 img = element.get_image(result.document)
             except Exception as e:
                 warnings.append(f"{filename}: figure {pic_idx} get_image failed — {e}")
-                figure_filenames_in_order.append(None)  # preserve ordering slot
+                figure_filenames_in_order.append(None)
                 continue
             if img is None:
                 warnings.append(f"{filename}: figure {pic_idx} has no image data")
                 figure_filenames_in_order.append(None)
                 continue
 
-            buf = io.BytesIO()
-            try:
-                img.save(buf, format="PNG")
-            except Exception as e:
-                warnings.append(f"{filename}: figure {pic_idx} PNG encode failed — {e}")
+            w, h = img.size
+            area = w * h
+            if area < FIGURE_MIN_PIXEL_AREA:
+                filtered_small += 1
                 figure_filenames_in_order.append(None)
                 continue
-            figures.append({
-                "filename": fig_filename,
-                "data_b64": base64.b64encode(buf.getvalue()).decode("ascii"),
-                "mime": "image/png",
+
+            candidates.append({
+                "pic_idx": pic_idx,
+                "page_no": page_no,
+                "img": img,
+                "phash": _phash(img),
+                "order_slot": len(figure_filenames_in_order),
             })
-            figure_filenames_in_order.append(fig_filename)
+            # Placeholder; resolved once filtering decides keep/drop
+            figure_filenames_in_order.append("__PENDING__")
 
         elif isinstance(element, TableItem):
             page_no = 0
@@ -1066,11 +1083,67 @@ def _convert_single_docling(content: bytes, filename: str) -> Tuple[str, List[di
                 page_no = getattr(element.prov[0], "page_no", 0) or 0
             per_page_tables[page_no] = per_page_tables.get(page_no, 0) + 1
 
-    # --- Inject figure refs into the Markdown in reading order ---
+    # Dedupe by phash: any hash that appears on >= N distinct pages is
+    # treated as repeated noise (logo, watermark, header rule). An all-zero
+    # hash (phash failure) is never grouped.
+    pages_by_hash: Dict[bytes, set] = {}
+    for c in candidates:
+        h = c["phash"]
+        if not h:
+            continue
+        pages_by_hash.setdefault(h, set()).add(c["page_no"])
+
+    noisy_hashes = {h for h, pages in pages_by_hash.items()
+                    if len(pages) >= FIGURE_DEDUP_MIN_OCCURRENCES}
+    filtered_repeated = 0
+
+    # Emit kept candidates; mark filtered ones as None in the order array.
+    for c in candidates:
+        slot = c["order_slot"]
+        if c["phash"] and c["phash"] in noisy_hashes:
+            filtered_repeated += 1
+            figure_filenames_in_order[slot] = None
+            continue
+
+        page_no = c["page_no"]
+        kept_idx = len(figures) + 1  # 1-based among *kept* figures
+        fig_filename = f"figure-{kept_idx}-p{page_no}-{stem}.png"
+        per_page_figures[page_no] = per_page_figures.get(page_no, 0) + 1
+
+        buf = io.BytesIO()
+        try:
+            c["img"].save(buf, format="PNG")
+        except Exception as e:
+            warnings.append(f"{filename}: figure {c['pic_idx']} PNG encode failed — {e}")
+            figure_filenames_in_order[slot] = None
+            continue
+        figures.append({
+            "filename": fig_filename,
+            "data_b64": base64.b64encode(buf.getvalue()).decode("ascii"),
+            "mime": "image/png",
+        })
+        figure_filenames_in_order[slot] = fig_filename
+
+    if filtered_small:
+        warnings.append(
+            f"{filename}: filtered {filtered_small} small figure(s) (below {FIGURE_MIN_PIXEL_AREA}px)"
+        )
+    if filtered_repeated:
+        warnings.append(
+            f"{filename}: filtered {filtered_repeated} repeated figure(s) "
+            f"(appearing on ≥{FIGURE_DEDUP_MIN_OCCURRENCES} pages — logo/watermark)"
+        )
+
+    # --- Inject reference-style figure refs + append base64 definitions ---
     # Docling's markdown exporter emits "<!-- image -->" as a placeholder
-    # for each picture.  Replace them one-by-one with real refs.
+    # for each picture (including filtered ones — we emitted order slots
+    # for all of them).  Replace in order, then append a single figures
+    # section with all the base64 data URIs.
+    id_map: Dict[str, str] = {}
     if figure_filenames_in_order:
-        markdown = _inject_figure_refs(markdown, figure_filenames_in_order)
+        markdown, id_map = _inject_figure_refs(markdown, figure_filenames_in_order)
+    if id_map and figures:
+        markdown = _append_figures_section(markdown, id_map, figures)
 
     # --- Per-page confidence ---
     page_entries: List[dict] = []
@@ -1132,12 +1205,50 @@ def _convert_single_docling(content: bytes, filename: str) -> Tuple[str, List[di
 
 _IMAGE_PLACEHOLDER_RE = re.compile(r"<!--\s*image\s*-->", re.IGNORECASE)
 
+FIGURES_SENTINEL = "<!-- ========== FIGURES ========== -->"
+
+
+def _phash(img, size: int = FIGURE_PHASH_SIZE) -> bytes:
+    """Perceptual hash of a PIL image.
+
+    Method: resize to size×size greyscale, compute per-pixel >= mean, pack to
+    bytes. Cheap (no DCT), robust to small resamples, colour shifts, and
+    minor DPI changes — plenty for catching 'same logo on every page' in
+    document PDFs.  Returns `b''` if the image can't be processed.
+    """
+    try:
+        from PIL import Image  # noqa: F401  (already bundled via Docling)
+        g = img.convert("L").resize((size, size))
+        pixels = list(g.getdata())
+        mean = sum(pixels) / len(pixels)
+        bits = [1 if p >= mean else 0 for p in pixels]
+        out = bytearray((len(bits) + 7) // 8)
+        for i, b in enumerate(bits):
+            if b:
+                out[i // 8] |= 1 << (i % 8)
+        return bytes(out)
+    except Exception:
+        return b""
+
 
 def _inject_figure_refs(markdown: str, filenames_in_order: List[Optional[str]]) -> str:
-    """Replace Docling's '<!-- image -->' placeholders with real Markdown
-    image refs, in document order.  If a filename slot is None (figure
-    failed to extract), the placeholder is left untouched so the reader
-    still knows something was there."""
+    """Replace Docling's '<!-- image -->' placeholders with reference-style
+    Markdown refs (`![Figure][figN]`) in document order.  If a filename slot
+    is None (figure filtered out or failed to extract), the placeholder is
+    replaced with a short italic note so the reader knows something was
+    there but was intentionally dropped.
+
+    The ref IDs come from the figure `filename` field (which includes the
+    figure index and page), mapped to short stable IDs `fig1`, `fig2`, ...
+    The actual `[figN]: data:...` definitions are appended by
+    `_append_figures_section()`.
+    """
+    # Map filename -> figN id based on order of appearance
+    id_map: Dict[str, str] = {}
+    for fn in filenames_in_order:
+        if fn and fn not in id_map:
+            id_map[fn] = f"fig{len(id_map) + 1}"
+
     it = iter(filenames_in_order)
 
     def _sub(_match):
@@ -1146,10 +1257,45 @@ def _inject_figure_refs(markdown: str, filenames_in_order: List[Optional[str]]) 
         except StopIteration:
             return _match.group(0)
         if fname is None:
-            return _match.group(0)
-        return f"![Figure]({fname})"
+            return "*[figure filtered]*"
+        return f"![Figure {id_map[fname][3:]}][{id_map[fname]}]"
 
-    return _IMAGE_PLACEHOLDER_RE.sub(_sub, markdown)
+    body = _IMAGE_PLACEHOLDER_RE.sub(_sub, markdown)
+    return body, id_map
+
+
+def _append_figures_section(markdown: str, id_map: Dict[str, str], figures: List[dict]) -> str:
+    """Append the reference-style figure definitions to the Markdown.
+
+    Layout:
+        <body>
+
+        <!-- ========== FIGURES ========== -->
+        <!-- fig1: page 3 -->
+        [fig1]: data:image/png;base64,iVBOR...
+        <!-- fig2: page 7 -->
+        [fig2]: data:image/png;base64,iVBOR...
+
+    Strip everything from the sentinel comment onward to get an LLM-ready,
+    text-only version of the document.
+    """
+    if not id_map or not figures:
+        return markdown
+
+    by_filename = {f["filename"]: f for f in figures}
+    lines = [markdown.rstrip(), "", FIGURES_SENTINEL, ""]
+    for fname, fig_id in id_map.items():
+        fig = by_filename.get(fname)
+        if not fig:
+            continue
+        # Provenance comment (cheap, useful)
+        m = re.search(r"-p(\d+)-", fname)
+        page_str = f"page {m.group(1)}" if m else "page unknown"
+        lines.append(f"<!-- {fig_id}: {page_str} -->")
+        mime = fig.get("mime", "image/png")
+        lines.append(f"[{fig_id}]: data:{mime};base64,{fig['data_b64']}")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _heuristic_page_stats_to_entry(filename: str, ps: PageStats) -> dict:

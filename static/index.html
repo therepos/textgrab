@@ -367,7 +367,7 @@
 </div>
 
 <footer>
-  textgrab v4.1 — all processing runs locally<br>
+  textgrab <span id="footer-version">v4.4.0</span> — all processing runs locally<br>
   <a href="https://github.com/therepos/textgrab" target="_blank" style="color: inherit; text-decoration: underline;">View on GitHub</a>
 </footer>
 
@@ -976,6 +976,12 @@
       opt.textContent = label;
       sel.appendChild(opt);
     }
+  }).catch(() => {});
+
+  // Footer version (4.3.0+): single source of truth is /api/version
+  fetch('/api/version').then(r => r.json()).then(v => {
+    const el = document.getElementById('footer-version');
+    if (el && v && v.version) el.textContent = 'v' + v.version;
   }).catch(() => {});
 </script>
 </body>

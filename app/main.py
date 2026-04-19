@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 app = FastAPI(
     title="textgrab",
-    version="4.3.0",
+    version="4.4.0",
     description="Text extraction + tabular data conversion",
     docs_url="/docs",
     redoc_url=None,
@@ -603,7 +603,7 @@ def health():
 def version():
     return {
         "service": "textgrab",
-        "version": "4.1",
+        "version": "4.4.0",
     }
 
 
