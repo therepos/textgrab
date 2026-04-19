@@ -17,6 +17,7 @@ Schemes are output transforms for the Text tab. They reshape extracted text into
 |--------|---------|-------------|
 | Raw Text | All | Default. Returns extracted text as-is. |
 | IM Classic | .mhtml | Converts Government Instruction Manual content into structured markdown with hierarchical codes and glossary. |
+| PDF → Markdown | .pdf | Converts PDFs into structured Markdown using Docling (IBM, MIT-licensed) as the primary engine — DocLayNet-trained layout model, TableFormer for table structure, EasyOCR for scanned pages. Extracts figures as base64 PNG sidecars. Falls back to a deterministic heuristic pipeline (font-size clustering + img2table + doctr) if Docling fails on a document. CPU-only inference; no LLM in the pipeline. |
 
 Add new schemes by creating a Python file in `app/schemes/`.
 
